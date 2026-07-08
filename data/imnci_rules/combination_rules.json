@@ -1,0 +1,177 @@
+{
+  "_meta": {
+    "scope": "Sick Young Infant, age up to 2 months",
+    "source": "IMNCI Chart Booklet for Medical Officers (2023), Ministry of Health & Family Welfare, Govt. of India",
+    "source_url": "https://nhm.gov.in/images/pdf/programmes/child-health/guidelines/IMNCI-Module-2023-For-Medical-Officers/IMNCI-Chart-booklet-Medical-Officer-2023.pdf",
+    "note": "Rules paraphrased and structured from the official chart booklet. Each rule includes a reference to the chart section it maps to, for auditability.",
+    "usage": "The Risk Combination Agent should check rules in order (bacterial_infection first, then jaundice, then diarrhoea, then feeding), since a single visit may trigger multiple classifications. Any 'refer_now' result takes priority over all others."
+  },
+
+  "rules": [
+    {
+      "id": "bacterial_infection_severe",
+      "chart_section": "Check for Possible Bacterial Infection",
+      "signs_any_of": [
+        { "feeding": "not_able_to_feed_at_all" },
+        { "feeding": "not_feeding_well" },
+        { "convulsions": "convulsing_now" },
+        { "convulsions": "had_convulsions" },
+        { "breathing_rate": "fast_breathing" },
+        { "breathing_rate": "severe_chest_indrawing" },
+        { "temperature": "fever_37_5C_or_above_or_hot_to_touch" },
+        { "temperature": "low_temp_below_35_5C_or_cold_to_touch" },
+        { "movement": "moves_only_when_stimulated" },
+        { "movement": "no_movement_at_all" }
+      ],
+      "classification": "possible_serious_bacterial_infection_or_very_severe_disease",
+      "urgency": "refer_now",
+      "action_summary": "Refer urgently to hospital. Give pre-referral care (anticonvulsant if convulsing, first antibiotic dose if available, keep warm, prevent low blood sugar)."
+    },
+    {
+      "id": "bacterial_infection_local",
+      "chart_section": "Check for Possible Bacterial Infection",
+      "signs_any_of": [
+        { "umbilicus": "red_or_draining_pus" },
+        { "skin_pustules": "present" },
+        { "breathing_rate": "fast_breathing", "note": "applies specifically to infants 7-59 days old for this classification" }
+      ],
+      "classification": "local_bacterial_infection_or_pneumonia",
+      "urgency": "monitor_recheck",
+      "action_summary": "Give oral antibiotic course, teach home treatment for local infection, advise when to return immediately, follow up after 2 days.",
+      "escalate_if": "infant also has low_weight_for_age or another severe classification present"
+    },
+    {
+      "id": "bacterial_infection_none",
+      "chart_section": "Check for Possible Bacterial Infection",
+      "signs_all_of": [],
+      "condition": "none of the above bacterial infection signs present",
+      "classification": "infection_unlikely",
+      "urgency": "reassure",
+      "action_summary": "Advise home care for the young infant."
+    },
+    {
+      "id": "jaundice_severe",
+      "chart_section": "Check for Jaundice",
+      "signs_any_of": [
+        { "jaundice_onset": "onset_before_24_hours" },
+        { "jaundice_extent": "palms_or_soles_yellow" }
+      ],
+      "classification": "severe_jaundice",
+      "urgency": "refer_now",
+      "action_summary": "Refer urgently to hospital. Treat to prevent low blood sugar, keep warm on the way."
+    },
+    {
+      "id": "jaundice_moderate",
+      "chart_section": "Check for Jaundice",
+      "signs_all_of": [
+        { "jaundice_onset": "onset_after_24_hours" },
+        { "jaundice_extent": "face_or_body_only" }
+      ],
+      "classification": "jaundice",
+      "urgency": "monitor_recheck",
+      "action_summary": "Advise home care. Tell caregiver to return immediately if palms/soles turn yellow. If infant older than 2 weeks, refer for assessment. Follow up after 2 days.",
+      "reassurance_note": "This pattern is common and usually resolves without treatment, but must still be monitored."
+    },
+    {
+      "id": "jaundice_none",
+      "chart_section": "Check for Jaundice",
+      "signs_all_of": [
+        { "jaundice_onset": "no_jaundice" }
+      ],
+      "classification": "no_jaundice",
+      "urgency": "reassure",
+      "action_summary": "Advise home care."
+    },
+    {
+      "id": "dehydration_severe",
+      "chart_section": "Diarrhoea - Classify for Dehydration",
+      "signs_count_at_least": 2,
+      "signs_from": [
+        { "movement": "no_movement_at_all" },
+        { "movement": "moves_only_when_stimulated" },
+        { "hydration_signs": "sunken_eyes" },
+        { "hydration_signs": "skin_pinch_goes_back_very_slowly" }
+      ],
+      "requires": { "diarrhoea_present": "yes" },
+      "classification": "severe_dehydration",
+      "urgency": "refer_now",
+      "action_summary": "Refer urgently, with ORS sips on the way if infant can drink, or Plan C rehydration if no other severe classification present."
+    },
+    {
+      "id": "dehydration_some",
+      "chart_section": "Diarrhoea - Classify for Dehydration",
+      "signs_count_at_least": 2,
+      "signs_from": [
+        { "hydration_signs": "restless_or_irritable" },
+        { "hydration_signs": "sunken_eyes" },
+        { "hydration_signs": "skin_pinch_goes_back_slowly" }
+      ],
+      "requires": { "diarrhoea_present": "yes" },
+      "classification": "some_dehydration",
+      "urgency": "monitor_recheck",
+      "action_summary": "Give Plan B fluids, escalate to urgent referral only if another severe classification also present."
+    },
+    {
+      "id": "dehydration_none",
+      "chart_section": "Diarrhoea - Classify for Dehydration",
+      "requires": { "diarrhoea_present": "yes" },
+      "condition": "not enough signs to classify as some or severe dehydration",
+      "classification": "no_dehydration",
+      "urgency": "reassure",
+      "action_summary": "Give Plan A home fluids and continue feeding, advise when to return immediately, follow up after 2 days if no improvement."
+    },
+    {
+      "id": "feeding_very_low_weight",
+      "chart_section": "Check for Feeding Problem or Low Weight",
+      "signs_any_of": [
+        { "weight_status": "very_low_weight" }
+      ],
+      "classification": "very_low_weight",
+      "urgency": "refer_now",
+      "action_summary": "Refer urgently to hospital. Prevent low blood sugar and keep warm via skin-to-skin contact while arranging referral."
+    },
+    {
+      "id": "feeding_problem_or_low_weight",
+      "chart_section": "Check for Feeding Problem or Low Weight",
+      "signs_any_of": [
+        { "feeding_attachment": "not_well_attached" },
+        { "feeding_attachment": "not_suckling_effectively" },
+        { "feeds_per_day": "less_than_8" },
+        { "other_foods_or_drinks": "yes" },
+        { "thrush": "present" },
+        { "weight_status": "low_weight_for_age" }
+      ],
+      "classification": "feeding_problem_and_or_low_weight",
+      "urgency": "monitor_recheck",
+      "action_summary": "Counsel on correct positioning/attachment, feeding frequency, home warmth for low weight. Advise when to return immediately. Follow up after 2 days (feeding) or 14 days (low weight)."
+    },
+    {
+      "id": "feeding_no_problem",
+      "chart_section": "Check for Feeding Problem or Low Weight",
+      "condition": "weight_status is normal_weight and no other feeding signs present",
+      "classification": "no_feeding_problem",
+      "urgency": "reassure",
+      "action_summary": "Praise caregiver for feeding well, advise home care, advise when to return immediately."
+    }
+  ],
+
+  "confidence_weighting": {
+    "note": "Applied by the Risk Combination Agent on top of the above rules.",
+    "asha_reported": "Use classifications as-is; ASHA input is treated as structured, trained-observer data.",
+    "parent_reported": "Apply a wider safety margin: any ambiguous or unconfirmed sign that could plausibly belong to a refer_now combination should bias the outcome toward monitor_recheck or refer_now rather than reassure, until disambiguated."
+  },
+
+  "universal_return_now_signs": {
+    "chart_section": "Advise the Mother when to return to physician",
+    "description": "Regardless of initial classification, caregiver should be told to return immediately if any of these develop.",
+    "signs": [
+      "breastfeeding_or_drinking_poorly",
+      "becomes_sicker",
+      "develops_fever_or_feels_cold_to_touch",
+      "fast_breathing",
+      "difficult_breathing",
+      "yellow_palms_and_soles_if_infant_has_jaundice",
+      "diarrhoea_with_blood_in_stool"
+    ]
+  }
+}

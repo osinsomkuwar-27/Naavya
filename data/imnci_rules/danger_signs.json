@@ -1,0 +1,77 @@
+{
+  "_meta": {
+    "scope": "Sick Young Infant, age up to 2 months",
+    "source": "IMNCI Chart Booklet for Medical Officers (2023), Ministry of Health & Family Welfare, Govt. of India",
+    "source_url": "https://nhm.gov.in/images/pdf/programmes/child-health/guidelines/IMNCI-Module-2023-For-Medical-Officers/IMNCI-Chart-booklet-Medical-Officer-2023.pdf",
+    "note": "Sign definitions and thresholds paraphrased from the official chart booklet for machine-readable use. Always cross-reference the source PDF before finalizing."
+  },
+
+  "signs": {
+    "feeding": {
+      "description": "How well the infant is feeding",
+      "values": ["feeding_normally", "not_feeding_well", "not_able_to_feed_at_all"]
+    },
+    "convulsions": {
+      "description": "Whether the infant has had convulsions or is convulsing now",
+      "values": ["none", "convulsing_now", "had_convulsions"]
+    },
+    "breathing_rate": {
+      "description": "Breath count per minute, and age-adjusted fast-breathing threshold",
+      "note": "Fast breathing threshold is 60+ breaths/min if infant is under 7 days old; also 60+ breaths/min for infants 7-59 days old per local bacterial infection check.",
+      "values": ["normal", "fast_breathing", "severe_chest_indrawing"]
+    },
+    "temperature": {
+      "description": "Axillary temperature or felt warmth/coldness",
+      "values": ["normal", "fever_37_5C_or_above_or_hot_to_touch", "low_temp_below_35_5C_or_cold_to_touch"]
+    },
+    "movement": {
+      "description": "Infant's spontaneous movement level",
+      "values": ["moves_on_own", "moves_only_when_stimulated", "no_movement_at_all"]
+    },
+    "umbilicus": {
+      "description": "Condition of the umbilical area",
+      "values": ["normal", "red_or_draining_pus"]
+    },
+    "skin_pustules": {
+      "description": "Presence of skin pustules",
+      "values": ["absent", "present"]
+    },
+    "jaundice_onset": {
+      "description": "When yellow skin discoloration first appeared",
+      "values": ["no_jaundice", "onset_before_24_hours", "onset_after_24_hours"]
+    },
+    "jaundice_extent": {
+      "description": "How far the yellow discoloration has spread",
+      "values": ["not_applicable", "face_or_body_only", "palms_or_soles_yellow"]
+    },
+    "diarrhoea_present": {
+      "description": "Whether stool pattern has changed to frequent and watery",
+      "values": ["no", "yes"]
+    },
+    "hydration_signs": {
+      "description": "Combination indicators for dehydration assessment",
+      "values": ["none", "restless_or_irritable", "sunken_eyes", "skin_pinch_goes_back_slowly", "skin_pinch_goes_back_very_slowly"]
+    },
+    "weight_status": {
+      "description": "Weight relative to age-based thresholds",
+      "note": "Very low weight = under 1800g if infant is under 7 days old, or weight-for-age below -3SD if 7-59 days old.",
+      "values": ["normal_weight", "low_weight_for_age", "very_low_weight"]
+    },
+    "feeding_attachment": {
+      "description": "Breastfeeding attachment and suckling quality",
+      "values": ["good_attachment", "not_well_attached", "not_suckling_effectively", "not_suckling_at_all"]
+    },
+    "feeds_per_day": {
+      "description": "Number of breastfeeds in 24 hours",
+      "values": ["8_or_more", "less_than_8"]
+    },
+    "other_foods_or_drinks": {
+      "description": "Whether infant receives foods/drinks other than breastmilk",
+      "values": ["no", "yes"]
+    },
+    "thrush": {
+      "description": "Ulcers or white patches in the mouth",
+      "values": ["absent", "present"]
+    }
+  }
+}
