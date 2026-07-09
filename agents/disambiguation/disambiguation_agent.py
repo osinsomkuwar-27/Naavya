@@ -222,6 +222,33 @@ class DisambiguationAgent:
             ),
         }
 
+    def process_intake(self, intake_output: dict, get_answer_fn) -> dict:
+        """
+        Full entry point matching Soham's IntakeResult.to_dict() contract:
+        {"source", "raw_transcript", "clear_signs", "vague_signs"}.
+
+        Resolves vague_signs via disambiguation, then MERGES in
+        clear_signs (already-confident signs from the Intake Agent) so
+        nothing he already extracted gets dropped. clear_signs values
+        win on overlap (they came from an unambiguous transcript match;
+        disambiguation only runs on signs he explicitly flagged vague,
+        so overlap shouldn't normally happen -- but clear_signs is
+        trusted first if it ever does).
+        """
+        vague_signs = intake_output.get("vague_signs", [])
+        clear_signs = intake_output.get("clear_signs", {})
+
+        merged = self.resolve_all(vague_signs, get_answer_fn)
+        merged.source = intake_output.get("source", merged.source)
+
+        output = self.build_output(merged)
+        # clear_signs first, then disambiguated signs layered on top --
+        # but clear_signs wins if a key ever collides.
+        combined_signs = {**output["signs"], **clear_signs}
+        output["signs"] = combined_signs
+        output["raw_transcript"] = intake_output.get("raw_transcript")
+        return output
+
 
 # ---------------------------------------------------------------------------
 # Manual test harness — run this file directly to try it with text input
@@ -252,3 +279,35 @@ if __name__ == "__main__":
     import json
     print("STRUCTURED OUTPUT FOR RISK COMBINATION AGENT:")
     print(json.dumps(output, indent=2))
+
+    print("\n" + "=" * 70)
+    print("TEST 2 -- full process_intake() using Soham's real IntakeResult shape")
+    print("=" * 70)
+
+    # Matches Soham's intake_agent.py sample transcript output exactly:
+    # "baby has not been feeding since morning, not feeding well, and
+    # also has fever" -> clear_signs empty, vague_signs=["feeding","temperature"]
+    soham_intake_output = {
+        "source": "parent_reported_voice",
+        "raw_transcript": (
+            "baby has not been feeding since morning, not feeding well, "
+            "and also has fever"
+        ),
+        "clear_signs": {"movement": "moves_on_own"},  # e.g. he also caught this clearly
+        "vague_signs": ["feeding", "temperature"],
+    }
+
+    scripted_answers_2 = {
+        QUESTION_BANK["feeding"]["question"]: "not feeding at all, refusing completely",
+        QUESTION_BANK["temperature"]["question"]: "feels very warm and sweaty",
+    }
+
+    def mock_get_answer_2(question: str) -> str:
+        print(f"AGENT ASKS: {question}")
+        answer = scripted_answers_2.get(question, "not sure")
+        print(f"PARENT ANSWERS: {answer}\n")
+        return answer
+
+    final_output = agent.process_intake(soham_intake_output, mock_get_answer_2)
+    print("FINAL MERGED OUTPUT (clear_signs + disambiguated signs):")
+    print(json.dumps(final_output, indent=2))
