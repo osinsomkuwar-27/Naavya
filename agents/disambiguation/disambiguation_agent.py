@@ -224,7 +224,7 @@ class DisambiguationAgent:
 
     def process_intake(self, intake_output: dict, get_answer_fn) -> dict:
         """
-        Full entry point matching Soham's IntakeResult.to_dict() contract:
+        Full entry point matching the Intake Agent's output contract:
         {"source", "raw_transcript", "clear_signs", "vague_signs"}.
 
         Resolves vague_signs via disambiguation, then MERGES in
@@ -281,13 +281,13 @@ if __name__ == "__main__":
     print(json.dumps(output, indent=2))
 
     print("\n" + "=" * 70)
-    print("TEST 2 -- full process_intake() using Soham's real IntakeResult shape")
+    print("TEST 2 -- full process_intake() using the real Intake Agent output shape")
     print("=" * 70)
 
-    # Matches Soham's intake_agent.py sample transcript output exactly:
+    # Matches agents/intake/intake_agent.py's sample transcript output exactly:
     # "baby has not been feeding since morning, not feeding well, and
     # also has fever" -> clear_signs empty, vague_signs=["feeding","temperature"]
-    soham_intake_output = {
+    intake_output_sample = {
         "source": "parent_reported_voice",
         "raw_transcript": (
             "baby has not been feeding since morning, not feeding well, "
@@ -308,6 +308,6 @@ if __name__ == "__main__":
         print(f"PARENT ANSWERS: {answer}\n")
         return answer
 
-    final_output = agent.process_intake(soham_intake_output, mock_get_answer_2)
+    final_output = agent.process_intake(intake_output_sample, mock_get_answer_2)
     print("FINAL MERGED OUTPUT (clear_signs + disambiguated signs):")
     print(json.dumps(final_output, indent=2))
