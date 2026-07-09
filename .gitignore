@@ -1,0 +1,59 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Virtual environments ---
+venv/
+env/
+.venv/
+ENV/
+
+# --- Environment variables / secrets ---
+.env
+.env.local
+*.env
+
+# --- FastAPI / Uvicorn ---
+*.log
+
+# --- Whisper / ML model caches (large files, don't commit) ---
+*.pt
+*.bin
+.cache/
+models/
+
+# --- Jupyter (if anyone uses notebooks for testing) ---
+.ipynb_checkpoints/
+
+# --- OS-specific junk ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Editor/IDE ---
+.vscode/
+.idea/
+*.swp
+
+# --- Temp audio files (voice notes / test clips downloaded during testing) ---
+*.ogg
+*.wav
+*.mp3
+!tests/**/*.wav
+!tests/**/*.ogg
+
+# --- Node (if frontend/ uses npm) ---
+node_modules/
+frontend/dist/
+frontend/.next/
+
+# --- Misc ---
+*.tmp
+*.bak
