@@ -26,7 +26,7 @@ Used to confirm the ASHA visit schedule (day 3, 7, 14, 21, 28, 42) that defines 
 
 ## Validation Status
 
-- [ ] Cross-checked against source PDF by a second team member (Shreeja) — pending
+- [x] Cross-checked against source PDF by a second team member (Shreeja) — 09/07/2026
 - [ ] Bias/fairness test run against sample sign combinations — pending (owned by Kshitij, see `ethics/bias_report/`)
 
 ## Notes on Scope Limitation
