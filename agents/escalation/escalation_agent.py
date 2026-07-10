@@ -9,6 +9,13 @@ class Urgency:
     REASSURE = "reassure"
 
 
+# ---------------------------------------------------------------------------
+# Reply templates. Keep them in plain, non-alarming, non-technical language
+# — this is what actually gets spoken back to a parent via TTS.
+# Placeholders like {classification} get filled from the Risk Combination
+# Agent's output (see build_reply()).
+# ---------------------------------------------------------------------------
+
 TEMPLATES = {
     Urgency.REFER_NOW: (
         "This could be serious ({classification}). Please take the baby "
@@ -210,7 +217,7 @@ if __name__ == "__main__":
     }
     disambig_output_2 = {
         "source": "parent_reported_voice",
-        "signs": {"jaundice_extent": "face_or_body_only", "current_age_days": 10, "jaundice_onset_day": 3},
+        "signs": {"jaundice_extent": "face_or_body_only", "age_days": 10, "jaundice_onset_day": 3},
         "safe_fallback_message": None,
     }
     result_2 = agent.handle(risk_output_2, disambig_output_2, household_id="HH-2077")
