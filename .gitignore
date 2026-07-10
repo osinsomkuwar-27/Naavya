@@ -57,3 +57,8 @@ frontend/.next/
 # --- Misc ---
 *.tmp
 *.bak
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
