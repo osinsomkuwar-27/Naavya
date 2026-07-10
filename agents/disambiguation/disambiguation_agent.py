@@ -1,3 +1,22 @@
+"""
+Disambiguation Agent — NeoTriage (BAH 2026)
+Owner: Shreeja
+
+Job: take the Intake Agent's output (raw/vague candidate signs from a
+parent's free-speech description) and turn it into the structured sign
+object that the Risk Combination Agent expects (per Kshitij's
+data/imnci_rules/danger_signs.json schema).
+
+Design rules:
+- Ask ONE question at a time, in plain observable-behaviour language.
+  Never ask a parent to self-diagnose.
+- Max 2-3 disambiguation rounds per vague sign. If still unclear after
+  that, do NOT guess — fall back to the safe default.
+- Output is tagged source="parent_reported_voice" so the Risk
+  Combination Agent applies the wider safety margin (confidence_weighting
+  in Kshitij's rule table).
+"""
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -160,7 +179,7 @@ class DisambiguationAgent:
         onset_day = max(current_age_days - onset_days_ago, 0)
 
         return {
-            "current_age_days": current_age_days,
+            "age_days": current_age_days,
             "jaundice_onset_day": onset_day,
             # Matches the fixed severe-jaundice rule: age >= 14 days
             # with jaundice present -> must escalate.
