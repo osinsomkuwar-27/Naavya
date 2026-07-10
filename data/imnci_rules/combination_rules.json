@@ -16,7 +16,6 @@
         { "feeding": "not_feeding_well" },
         { "convulsions": "convulsing_now" },
         { "convulsions": "had_convulsions" },
-        { "breathing_rate": "fast_breathing" },
         { "breathing_rate": "severe_chest_indrawing" },
         { "temperature": "fever_37_5C_or_above_or_hot_to_touch" },
         { "temperature": "low_temp_below_35_5C_or_cold_to_touch" },
@@ -26,6 +25,13 @@
         { "grunting": "present" },
         { "bulging_fontanelle": "present" },
         { "skin_pustules": "ten_or_more_or_big_boil" }
+      ],
+      "signs_any_of_age_gated": [
+        {
+          "condition": { "breathing_rate": "fast_breathing" },
+          "applies_if": "age_days < 7",
+          "note": "Fast breathing counts toward SEVERE classification only under 7 days old. For 7-59 days, it belongs to the local infection rule instead."
+        }
       ],
       "classification": "possible_serious_bacterial_infection_or_very_severe_disease",
       "urgency": "refer_now",
@@ -37,7 +43,7 @@
       "signs_any_of": [
         { "umbilicus": "red_or_draining_pus" },
         { "skin_pustules": "few_localized" },
-        { "breathing_rate": "fast_breathing", "note": "applies specifically to infants 7-59 days old for this classification" }
+        { "breathing_rate": "fast_breathing", "note": "applies only to infants 7-59 days old; under 7 days, fast breathing belongs to the severe classification instead" }
       ],
       "classification": "local_bacterial_infection_or_pneumonia",
       "urgency": "monitor_recheck",
