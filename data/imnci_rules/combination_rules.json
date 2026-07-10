@@ -21,7 +21,11 @@
         { "temperature": "fever_37_5C_or_above_or_hot_to_touch" },
         { "temperature": "low_temp_below_35_5C_or_cold_to_touch" },
         { "movement": "moves_only_when_stimulated" },
-        { "movement": "no_movement_at_all" }
+        { "movement": "no_movement_at_all" },
+        { "nasal_flaring": "present" },
+        { "grunting": "present" },
+        { "bulging_fontanelle": "present" },
+        { "skin_pustules": "ten_or_more_or_big_boil" }
       ],
       "classification": "possible_serious_bacterial_infection_or_very_severe_disease",
       "urgency": "refer_now",
@@ -32,7 +36,7 @@
       "chart_section": "Check for Possible Bacterial Infection",
       "signs_any_of": [
         { "umbilicus": "red_or_draining_pus" },
-        { "skin_pustules": "present" },
+        { "skin_pustules": "few_localized" },
         { "breathing_rate": "fast_breathing", "note": "applies specifically to infants 7-59 days old for this classification" }
       ],
       "classification": "local_bacterial_infection_or_pneumonia",
@@ -54,23 +58,27 @@
       "chart_section": "Check for Jaundice",
       "signs_any_of": [
         { "jaundice_onset": "onset_before_24_hours" },
-        { "jaundice_extent": "palms_or_soles_yellow" }
+        { "jaundice_extent": "palms_or_soles_yellow" },
+        { "condition": "jaundice present (any onset/extent) AND infant age >= 14 days" }
       ],
       "classification": "severe_jaundice",
       "urgency": "refer_now",
-      "action_summary": "Refer urgently to hospital. Treat to prevent low blood sugar, keep warm on the way."
+      "action_summary": "Refer urgently to hospital. Treat to prevent low blood sugar, keep warm on the way.",
+      "note": "Per IMNCI: any jaundice persisting to 14 days of age or beyond is classified severe regardless of extent, since physiological jaundice should have resolved by then."
     },
     {
       "id": "jaundice_moderate",
       "chart_section": "Check for Jaundice",
       "signs_all_of": [
         { "jaundice_onset": "onset_after_24_hours" },
-        { "jaundice_extent": "face_or_body_only" }
+        { "jaundice_extent": "face_or_body_only" },
+        { "condition": "infant age < 14 days" }
       ],
       "classification": "jaundice",
       "urgency": "monitor_recheck",
-      "action_summary": "Advise home care. Tell caregiver to return immediately if palms/soles turn yellow. If infant older than 2 weeks, refer for assessment. Follow up after 2 days.",
-      "reassurance_note": "This pattern is common and usually resolves without treatment, but must still be monitored."
+      "action_summary": "Advise home care. Tell caregiver to return immediately if palms/soles turn yellow OR if the infant reaches 14 days of age with jaundice still present. Follow up after 2 days.",
+      "reassurance_note": "This pattern is common and usually resolves without treatment, but must still be monitored.",
+      "note": "Superseded by jaundice_severe if infant reaches age >= 14 days while jaundice is still present — do not independently advise referral only 'if older than 2 weeks', since that threshold is now the severe classification's trigger, not a separate soft recommendation."
     },
     {
       "id": "jaundice_none",
