@@ -42,6 +42,9 @@ def imnci_lookup(signs: dict, source: str = "asha_reported") -> dict:
     validation = validate_signs(signs)
 
     if not validation["valid"]:
+        # Fail loud: do not attempt to classify against invalid/typo'd
+        # sign values. A clinical tool should never silently ignore bad
+        # input and quietly fall through to "reassure" by default.
         return {
             "classifications": [],
             "highest_urgency": "invalid_input",

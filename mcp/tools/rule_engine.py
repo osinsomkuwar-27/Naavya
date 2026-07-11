@@ -167,7 +167,7 @@ class RuleEngine:
             return self._matches_count_at_least(
                 patient_signs, rule["signs_from"], rule["signs_count_at_least"]
             )
-
+        
         return False
 
     def evaluate(self, patient_signs: dict) -> list:
