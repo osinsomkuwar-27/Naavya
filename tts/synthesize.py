@@ -1,13 +1,3 @@
-"""
-TTS (Text-to-Speech) — NeoTriage (BAH 2026)
-Owner: Shreeja
-
-Job: take the Escalation Agent's reply_text (already in the target
-regional language) and produce speech audio to play back to the parent
-— for the PoC, played back through the web demo's audio element rather
-than a real phone line.
-"""
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
