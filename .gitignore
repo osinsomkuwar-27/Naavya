@@ -48,6 +48,8 @@ Desktop.ini
 *.mp3
 !tests/**/*.wav
 !tests/**/*.ogg
+# --- TTS generated output ---
+tts_output/
 
 # --- Node (if frontend/ uses npm) ---
 node_modules/

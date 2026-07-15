@@ -1,22 +1,3 @@
-"""
-Disambiguation Agent — NeoTriage (BAH 2026)
-Owner: Shreeja
-
-Job: take the Intake Agent's output (raw/vague candidate signs from a
-parent's free-speech description) and turn it into the structured sign
-object that the Risk Combination Agent expects (per Kshitij's
-data/imnci_rules/danger_signs.json schema).
-
-Design rules:
-- Ask ONE question at a time, in plain observable-behaviour language.
-  Never ask a parent to self-diagnose.
-- Max 2-3 disambiguation rounds per vague sign. If still unclear after
-  that, do NOT guess — fall back to the safe default.
-- Output is tagged source="parent_reported_voice" so the Risk
-  Combination Agent applies the wider safety margin (confidence_weighting
-  in Kshitij's rule table).
-"""
-
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -178,9 +159,18 @@ class DisambiguationAgent:
         onset_days_ago = numbers[1] if len(numbers) > 1 else 0
         onset_day = max(current_age_days - onset_days_ago, 0)
 
+        # Derive the categorical value Kshitij's rules actually check
+        # (jaundice_onset: onset_before_24_hours / onset_after_24_hours).
+        # onset_day is the baby's age in days when jaundice first appeared.
+        if onset_day < 1:
+            jaundice_onset = "onset_before_24_hours"
+        else:
+            jaundice_onset = "onset_after_24_hours"
+
         return {
             "age_days": current_age_days,
             "jaundice_onset_day": onset_day,
+            "jaundice_onset": jaundice_onset,
             # Matches the fixed severe-jaundice rule: age >= 14 days
             # with jaundice present -> must escalate.
             "age_14_days_or_more_with_jaundice": current_age_days >= 14,
