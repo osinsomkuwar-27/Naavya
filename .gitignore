@@ -64,3 +64,5 @@ frontend/.next/
 *.db
 *.sqlite
 *.sqlite3
+
+ethics/bias_report/results.json

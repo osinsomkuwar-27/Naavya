@@ -1,0 +1,101 @@
+{
+  "_meta": {
+    "purpose": "Bias and fairness test cases for NeoTriage's classification logic (mcp/tools/imnci_lookup.py + rule_engine.py). This is a rule-based clinical system, not a trained ML model, so testing focuses on: (1) confirming no demographic/identity attribute ever influences classification, (2) determinism, (3) fairness of the source-based confidence weighting (asha_reported vs parent_reported), and (4) consistency at rule boundary conditions.",
+    "scope_limitation": "This test suite covers the classification logic only (mcp/tools/). It does NOT cover potential bias in the ASR layer (accent/dialect recognition accuracy across languages/regions -- Soham's asr/transcribe.py) or the disambiguation question-answering layer (Shreeja's agents/disambiguation/) -- those are separate, real bias surfaces owned by other components and flagged as out of scope here, not resolved."
+  },
+
+  "demographic_neutrality_check": {
+    "description": "Confirms danger_signs.json contains no field that encodes gender, caste, religion, name, region, language, or any other identity/demographic attribute. The classification logic can only ever see clinical signs.",
+    "method": "Static scan of all keys in data/imnci_rules/danger_signs.json against a list of prohibited attribute categories."
+  },
+
+  "determinism_cases": [
+    {
+      "id": "determinism_1",
+      "description": "Same input run 20 times should produce byte-identical output every time -- no hidden randomness in classification.",
+      "signs": {
+        "feeding": "not_able_to_feed_at_all",
+        "breathing_rate": "fast_breathing",
+        "age_days": 6
+      },
+      "source": "asha_reported",
+      "repeat_count": 20
+    }
+  ],
+
+  "source_fairness_cases": [
+    {
+      "id": "source_fairness_1",
+      "description": "Identical dangerous signs, only source differs. Expect IDENTICAL urgency for both -- refer_now should never depend on who reported it, since urgent danger signs override any confidence weighting.",
+      "signs": {
+        "feeding": "not_able_to_feed_at_all",
+        "breathing_rate": "fast_breathing",
+        "age_days": 6
+      },
+      "expected": "highest_urgency must be identical (refer_now) regardless of source"
+    },
+    {
+      "id": "source_fairness_2",
+      "description": "Identical fully-covered healthy signs, only source differs. Expect IDENTICAL urgency (reassure) for both -- confirms the post-fix margin doesn't penalize parent-reported input when coverage is genuinely complete.",
+      "signs": {
+        "feeding": "feeding_normally",
+        "breathing_rate": "normal",
+        "convulsions": "none",
+        "movement": "moves_on_own"
+      },
+      "expected": "highest_urgency must be identical (reassure) regardless of source"
+    },
+    {
+      "id": "source_fairness_3",
+      "description": "Identical PARTIALLY-covered signs, only source differs. Expect asha_reported to trust the reassure classification, while parent_reported gets the wider margin (monitor_recheck) -- this IS an intentional, documented differential treatment, not an unfair one, since it exists specifically to compensate for lower-structure voice input. Confirms the differential only ever moves toward MORE caution for parent_reported, never less.",
+      "signs": {
+        "jaundice_onset": "no_jaundice"
+      },
+      "expected": "asha_reported should NOT bump; parent_reported SHOULD bump. Direction of difference must always favor caution for parent_reported, never the reverse."
+    }
+  ],
+
+  "boundary_consistency_cases": [
+    {
+      "id": "breathing_age_boundary_below",
+      "description": "Fast breathing at age 6 days (just under the 7-day cutoff) must classify as severe, not local.",
+      "signs": {"breathing_rate": "fast_breathing", "age_days": 6, "feeding": "feeding_normally"},
+      "expected_matched_rule": "bacterial_infection_severe",
+      "expected_not_matched": "bacterial_infection_local"
+    },
+    {
+      "id": "breathing_age_boundary_at",
+      "description": "Fast breathing at exactly age 7 days must classify as local, not severe -- confirms the boundary itself (not just values away from it) is handled correctly.",
+      "signs": {"breathing_rate": "fast_breathing", "age_days": 7, "feeding": "feeding_normally"},
+      "expected_matched_rule": "bacterial_infection_local",
+      "expected_not_matched": "bacterial_infection_severe"
+    },
+    {
+      "id": "breathing_age_boundary_above",
+      "description": "Fast breathing at age 59 days (top of local-infection range) must still classify as local.",
+      "signs": {"breathing_rate": "fast_breathing", "age_days": 59, "feeding": "feeding_normally"},
+      "expected_matched_rule": "bacterial_infection_local",
+      "expected_not_matched": "bacterial_infection_severe"
+    },
+    {
+      "id": "jaundice_age_boundary_below",
+      "description": "Jaundice present at age 13 days must NOT trigger the severe age-based escalation.",
+      "signs": {"jaundice_onset": "onset_after_24_hours", "jaundice_extent": "face_or_body_only", "age_days": 13},
+      "expected_urgency": "monitor_recheck"
+    },
+    {
+      "id": "jaundice_age_boundary_at",
+      "description": "Jaundice present at exactly age 14 days MUST trigger the severe age-based escalation -- this is the exact boundary Shreeja's clinical review flagged.",
+      "signs": {"jaundice_onset": "onset_after_24_hours", "jaundice_extent": "face_or_body_only", "age_days": 14},
+      "expected_urgency": "refer_now"
+    },
+    {
+      "id": "pustule_count_boundary",
+      "description": "Pustule severity: few_localized must stay monitor_recheck, ten_or_more_or_big_boil must escalate to refer_now -- confirms no silent inconsistency between adjacent severity tiers.",
+      "signs_few": {"skin_pustules": "few_localized", "feeding": "feeding_normally"},
+      "signs_severe": {"skin_pustules": "ten_or_more_or_big_boil", "feeding": "feeding_normally"},
+      "expected_few": "monitor_recheck",
+      "expected_severe": "refer_now"
+    }
+  ]
+}
