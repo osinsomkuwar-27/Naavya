@@ -184,6 +184,33 @@ def run_risk_combination(disambiguation_output: dict) -> dict:
     }
 
 
+class RiskCombinationAgent:
+    """
+    Thin class wrapper around run_risk_combination(), matching the
+    interface backend/api/routes/assess.py imports and calls:
+
+        risk_agent = RiskCombinationAgent()
+        risk_output = risk_agent.classify(resolved_signs, source=intake_result.source)
+
+    Unlike run_risk_combination(), which takes Shreeja's full
+    disambiguation-output shape (including safe_fallback_message),
+    classify() takes a plain signs dict + source string directly --
+    matching what assess.py actually has in hand at that point in its
+    flow (it doesn't run real disambiguation yet, so there's no
+    safe_fallback_message to check at this call site).
+
+    Returns escalation_input directly (not the raw_lookup/escalation_input
+    wrapper), since that's the flat shape assess.py's
+    risk_output.get("urgency") call expects.
+    """
+
+    def classify(self, signs: dict, source: str = "asha_reported") -> dict:
+        normalized_source = normalize_source(source)
+        derived_signs = derive_jaundice_onset(signs)
+        lookup_result = imnci_lookup(derived_signs, source=normalized_source)
+        return adapt_for_escalation(lookup_result)
+
+
 if __name__ == "__main__":
     import json
 
@@ -210,7 +237,7 @@ if __name__ == "__main__":
     )
 
     print("\n" + "=" * 70)
-    print("TEST 2 -- source normalization (Bug 1 regression test)")
+    print("TEST 2 -- fully-covered healthy case stays reassure (margin fix)")
     print("=" * 70)
     disambig_output_2 = {
         "source": "parent_reported_voice",
@@ -223,13 +250,68 @@ if __name__ == "__main__":
     }
     result_2 = run_risk_combination(disambig_output_2)
     print(json.dumps(result_2, indent=2))
-    assert result_2["raw_lookup"]["confidence_note"] is not None, (
-        "Expected the parent safety margin to fire on this ambiguous-ish case"
+    assert result_2["raw_lookup"]["confidence_note"] is None, (
+        "Fully-covered, confirmed-normal signs should NOT trigger the "
+        "safety margin -- over-triggering here was the bug just fixed"
     )
-    assert result_2["escalation_input"]["urgency"] == "monitor_recheck", (
-        "Bug 4: adapter must use the safety-margin-bumped highest_urgency, "
-        "not the original driving rule's urgency -- got: "
+    assert result_2["escalation_input"]["urgency"] == "reassure", (
+        f"Expected reassure for a fully-covered healthy case, got "
         f"{result_2['escalation_input']['urgency']}"
+    )
+
+    print("\n" + "=" * 70)
+    print("TEST 2b -- partially uncovered case: some coverage, should trust it")
+    print("=" * 70)
+    disambig_output_2b = {
+        "source": "parent_reported_voice",
+        "signs": {
+            "feeding": "feeding_normally",
+            "breathing_rate": "normal",
+            "convulsions": "none",
+            "movement": "moves_on_own",
+        },
+        "safe_fallback_message": None,
+    }
+    result_2b = run_risk_combination(disambig_output_2b)
+    print(json.dumps(result_2b, indent=2))
+    assert result_2b["raw_lookup"]["confidence_note"] is None, (
+        "Bacterial infection category IS covered here (feeding, breathing, "
+        "convulsions, movement all present) -- should not bump"
+    )
+    assert result_2b["escalation_input"]["urgency"] == "reassure"
+    print("\n" + "=" * 70)
+    print("TEST 2c -- empty signs should be caught by margin fix, not slip through")
+    print("=" * 70)
+    disambig_output_2c = {
+        "source": "parent_reported_voice",
+        "signs": {},
+        "safe_fallback_message": None,
+    }
+    result_2c = run_risk_combination(disambig_output_2c)
+    print(json.dumps(result_2c, indent=2))
+    assert result_2c["raw_lookup"]["confidence_note"] is not None, (
+        "Empty signs must be caught by the coverage-based margin fix"
+    )
+    assert result_2c["escalation_input"]["urgency"] == "monitor_recheck", (
+        "Empty signs should never resolve to a confident reassure -- "
+        f"got {result_2c['escalation_input']['urgency']}"
+    )
+    print("\n" + "=" * 70)
+    print("TEST 2d -- genuinely uncovered category should bump (Bug 4 coverage)")
+    print("=" * 70)
+    disambig_output_2d = {
+        "source": "parent_reported_voice",
+        "signs": {"jaundice_onset": "no_jaundice"},  # nothing about feeding/breathing/etc at all
+        "safe_fallback_message": None,
+    }
+    result_2d = run_risk_combination(disambig_output_2d)
+    print(json.dumps(result_2d, indent=2))
+    assert result_2d["raw_lookup"]["confidence_note"] is not None, (
+        "Bacterial infection category has zero coverage here -- margin should fire"
+    )
+    assert result_2d["escalation_input"]["urgency"] == "monitor_recheck", (
+        "Bug 4: adapter must use the safety-margin-bumped highest_urgency -- got: "
+        f"{result_2d['escalation_input']['urgency']}"
     )
     print("\n" + "=" * 70)
     print("TEST 3 -- escalation_input shape check (Bug 3 regression test)")

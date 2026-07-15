@@ -42,9 +42,6 @@ def imnci_lookup(signs: dict, source: str = "asha_reported") -> dict:
     validation = validate_signs(signs)
 
     if not validation["valid"]:
-        # Fail loud: do not attempt to classify against invalid/typo'd
-        # sign values. A clinical tool should never silently ignore bad
-        # input and quietly fall through to "reassure" by default.
         return {
             "classifications": [],
             "highest_urgency": "invalid_input",
@@ -79,7 +76,7 @@ def imnci_lookup(signs: dict, source: str = "asha_reported") -> dict:
 
     confidence_note = None
     if source == "parent_reported":
-        confidence_note = _apply_parent_safety_margin(matches, highest_urgency)
+        confidence_note = _apply_parent_safety_margin(matches, highest_urgency, signs)
         if confidence_note:
             highest_urgency = _bump_urgency(highest_urgency)
 
@@ -104,25 +101,53 @@ def _bump_urgency(urgency: str) -> str:
     return urgency
 
 
-def _apply_parent_safety_margin(matches: list, highest_urgency: str) -> Optional[str]:
+def _apply_parent_safety_margin(matches: list, highest_urgency: str, signs: dict) -> Optional[str]:
     """Parent-reported input is inherently less structured than an ASHA's
-    trained checklist. If the classification landed on 'reassure' but ANY
-    matched rule sits in a chart section that also contains refer_now-level
-    classifications (i.e. the sign category is capable of being dangerous),
-    flag it for a wider margin rather than trusting a clean 'reassure'
-    off potentially under-described parent input."""
-    risky_sections = {
-        "Check for Possible Bacterial Infection",
-        "Check for Jaundice",
-        "Diarrhoea - Classify for Dehydration",
+    trained checklist. But bumping urgency just because a matched rule's
+    chart_section is CAPABLE of being dangerous (the original approach)
+    over-triggers badly: bacterial_infection_none, jaundice_none, etc.
+    all live in risky-capable sections, so a genuinely healthy baby with
+    every relevant sign explicitly reported as normal would still get
+    bumped from reassure to monitor_recheck every time -- defeating the
+    point of ever reassuring a parent.
+
+    Fixed approach: only bump if the caregiver's signs dict has ZERO
+    coverage of the relevant category (i.e. we have no information at
+    all about it, not just an inferred-normal absence). If at least one
+    relevant sign was explicitly reported, trust the classification --
+    that's exactly what disambiguation questions are for, and a
+    confirmed-normal answer should be allowed to mean reassure.
+    """
+    RISKY_CATEGORY_COVERAGE = {
+        "Check for Possible Bacterial Infection": {
+            "feeding", "convulsions", "breathing_rate", "temperature",
+            "movement", "nasal_flaring", "grunting", "bulging_fontanelle",
+            "skin_pustules", "umbilicus",
+        },
+        "Check for Jaundice": {"jaundice_onset", "jaundice_extent", "age_days"},
+        "Diarrhoea - Classify for Dehydration": {
+            "diarrhoea_present", "hydration_signs", "movement",
+        },
     }
-    if highest_urgency == "reassure":
-        touched_sections = {m["chart_section"] for m in matches if m["chart_section"]}
-        if touched_sections & risky_sections:
-            return (
-                "Input was parent-reported and touches a category that can "
-                "be serious. Applying a wider safety margin: recommend "
-                "monitor/recheck rather than full reassurance, and confirm "
-                "with disambiguation questions if not already asked."
-            )
+
+    if highest_urgency != "reassure":
+        return None
+
+    touched_sections = {m["chart_section"] for m in matches if m["chart_section"]}
+    uncovered_sections = []
+
+    for section in touched_sections:
+        coverage_keys = RISKY_CATEGORY_COVERAGE.get(section)
+        if not coverage_keys:
+            continue
+        if not (coverage_keys & signs.keys()):
+            uncovered_sections.append(section)
+
+    if uncovered_sections:
+        return (
+            "Input was parent-reported and did not cover: "
+            f"{', '.join(uncovered_sections)}. Applying a wider safety "
+            "margin: recommend monitor/recheck rather than full "
+            "reassurance until these are confirmed via disambiguation."
+        )
     return None
