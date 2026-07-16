@@ -159,22 +159,31 @@ class DisambiguationAgent:
         onset_days_ago = numbers[1] if len(numbers) > 1 else 0
         onset_day = max(current_age_days - onset_days_ago, 0)
 
-        # Derive the categorical value Kshitij's rules actually check
-        # (jaundice_onset: onset_before_24_hours / onset_after_24_hours).
-        # onset_day is the baby's age in days when jaundice first appeared.
-        if onset_day < 1:
-            jaundice_onset = "onset_before_24_hours"
-        else:
-            jaundice_onset = "onset_after_24_hours"
-
         return {
             "age_days": current_age_days,
-            "jaundice_onset_day": onset_day,
-            "jaundice_onset": jaundice_onset,
-            # Matches the fixed severe-jaundice rule: age >= 14 days
-            # with jaundice present -> must escalate.
-            "age_14_days_or_more_with_jaundice": current_age_days >= 14,
+            "jaundice_onset": (
+                "onset_before_24_hours" if onset_day <= 1
+                else "onset_after_24_hours"
+            ),
         }
+
+    def resume_disambiguation(
+        self, sign_key: str, answer_text: str,
+        already_resolved: dict, already_unresolved: list,
+        attempts_so_far: int,
+    ) -> dict:
+        """Called with ONE answer to ONE question, picks up where the
+        conversation left off instead of looping inline. Soham's /assess
+        endpoint calls this per HTTP request, passing in saved state from
+        his pending_disambiguation table (conversation_id-keyed)."""
+        parsed = self.interpret_answer(sign_key, answer_text)
+        if parsed is not None:
+            already_resolved[QUESTION_BANK[sign_key]['target_field']] = parsed
+            return {"status": "resolved", "resolved_signs": already_resolved}
+        if attempts_so_far + 1 >= MAX_DISAMBIGUATION_ROUNDS:
+            already_unresolved.append(sign_key)
+            return {"status": "unresolved", "fallback": SAFE_FALLBACK_MESSAGE}
+        return {"status": "ask_again", "question": self.get_question(sign_key)}
 
     def resolve_sign(self, sign_key: str, get_answer_fn) -> DisambiguationResult:
         """
@@ -256,8 +265,8 @@ class DisambiguationAgent:
         combined_signs = {**output["signs"], **clear_signs}
         output["signs"] = combined_signs
         output["raw_transcript"] = intake_output.get("raw_transcript")
+        output["language"] = intake_output.get("language", "en")
         return output
-
 
 # ---------------------------------------------------------------------------
 # Manual test harness — run this file directly to try it with text input
