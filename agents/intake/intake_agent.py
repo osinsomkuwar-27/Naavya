@@ -43,13 +43,15 @@ from typing import Optional
 @dataclass
 class IntakeResult:
     raw_transcript: str
-    source: str = "parent_reported_voice"
+    source: str = "parent_reported"
+    language: str = "en"
     clear_signs: dict = field(default_factory=dict)
     vague_signs: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "source": self.source,
+            "language": self.language,
             "raw_transcript": self.raw_transcript,
             "clear_signs": self.clear_signs,
             "vague_signs": self.vague_signs,
@@ -168,10 +170,15 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
 
 
-def extract_signs(transcript: str) -> IntakeResult:
+def extract_signs(transcript: str, language: str = "en") -> IntakeResult:
     """
     Main entry point. Extracts candidate danger signs from a raw
     transcript string.
+
+    `language` should be the ISO code detected by asr/transcribe.py's
+    Whisper call (TranscriptionResult.language) -- passed straight
+    through so downstream (Shreeja's TTS/escalation) knows what
+    language to reply in.
 
     NOTE: this PoC operates on the transcript AFTER translation/ASR to
     English-equivalent phrasing or transliterated Hindi keywords, per
@@ -182,7 +189,7 @@ def extract_signs(transcript: str) -> IntakeResult:
     silently assuming.
     """
     text = _normalize(transcript)
-    result = IntakeResult(raw_transcript=transcript)
+    result = IntakeResult(raw_transcript=transcript, language=language)
 
     seen_vague_keys = set()
 

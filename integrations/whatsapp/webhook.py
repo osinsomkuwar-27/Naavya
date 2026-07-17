@@ -18,7 +18,7 @@ import httpx
 from fastapi import APIRouter, Request, Response, HTTPException
 
 from asr.transcribe import transcribe, TranscriptionError
-from agents.intake.intake_agent import extract_signs
+from agents.intake.intake_agent_v2 import extract_signs
 
 router = APIRouter()
 
@@ -85,9 +85,14 @@ async def receive_message(request: Request):
             return {"status": "transcription_failed", "detail": str(e)}
 
         transcript_text = transcription.text
+        detected_language = transcription.language or "en"
 
     elif msg_type == "text":
         transcript_text = message["text"]["body"]
+        # No ASR involved for typed messages -- language unknown from
+        # audio, default to English until/unless WhatsApp gives us a
+        # locale hint another way.
+        detected_language = "en"
 
     else:
         await _send_text_reply(
@@ -97,7 +102,7 @@ async def receive_message(request: Request):
         )
         return {"status": "unsupported_type", "type": msg_type}
 
-    intake_result = extract_signs(transcript_text)
+    intake_result = extract_signs(transcript_text, language=detected_language)
 
     # NOTE: hand-off point. In the full pipeline, intake_result.to_dict()
     # goes to Shreeja's DisambiguationAgent.resolve_all() for any
