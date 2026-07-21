@@ -54,6 +54,7 @@ ASHA_ALERT_TEMPLATE = (
 class EscalationOutput:
     urgency: str
     reply_text: str
+    language: str = "en"
     asha_alert_sent: bool = False
     asha_alert_text: Optional[str] = None
     log_entry: dict = field(default_factory=dict)
@@ -154,6 +155,7 @@ class EscalationAgent:
             return EscalationOutput(
                 urgency=Urgency.REFER_NOW,
                 reply_text=reply_text,
+                language=disambiguation_output.get("language", "en"),
                 asha_alert_sent=asha_alert_sent,
                 asha_alert_text=asha_alert_text,
                 log_entry=log_entry,
@@ -172,6 +174,7 @@ class EscalationAgent:
         return EscalationOutput(
             urgency=risk_output["urgency"],
             reply_text=reply_text,
+            language=disambiguation_output.get("language", "en"),
             asha_alert_sent=asha_alert_sent,
             asha_alert_text=asha_alert_text,
             log_entry=log_entry,

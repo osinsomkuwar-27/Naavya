@@ -59,3 +59,10 @@ frontend/.next/
 # --- Misc ---
 *.tmp
 *.bak
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+ethics/bias_report/results.json

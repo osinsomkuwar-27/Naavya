@@ -49,9 +49,12 @@ import sys
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "mcp"))
-from tools.validator import validate_signs  
+from tools.validator import validate_signs  # noqa: E402
 
 logger = logging.getLogger("neotriage.intake_v2")
 logging.basicConfig(level=logging.INFO)
@@ -202,26 +205,13 @@ def _call_llm_for_extraction(prompt: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _AUDIT_KEYWORDS = {
-    # NOTE: originally Romanized-only (e.g. "khana", "jwara"), which is
-    # script-blind against real ASR output in native scripts -- a live
-    # Hindi test showed correct extraction still flagged as "no keyword
-    # found" simply because "खाना" != "khana" as strings. Added native
-    # Devanagari terms for Hindi below; Kannada/Odia native scripts are
-    # NOT yet covered and would need the same treatment -- flagging this
-    # explicitly rather than claiming full coverage.
-    "feeding": [
-        "feed", "doodh", "milk", "haalu", "khana",
-        "खाना", "दूध", "खा",  # Devanagari: food, milk, eat(ing)
-    ],
-    "breathing_rate": ["breath", "saans", "chest", "usiru", "सांस", "छाती"],
-    "temperature": [
-        "fever", "hot", "cold", "garam", "thanda", "jwara",
-        "बुखार", "भुखार", "गरम", "ठंडा", "ज्वर",  # Devanagari: fever (+ common ASR variant), hot, cold
-    ],
-    "jaundice_onset": ["yellow", "peela", "jaundice", "haladi", "पीला", "पीलिया"],
-    "jaundice_extent": ["yellow", "peela", "jaundice", "haladi", "पीला", "पीलिया"],
-    "convulsions": ["fit", "jhatke", "convuls", "seizure", "झटके"],
-    "movement": ["move", "active", "hilta", "lethargic", "हिलना", "सुस्त"],
+    "feeding": ["feed", "doodh", "milk", "haalu", "khana"],
+    "breathing_rate": ["breath", "saans", "chest", "usiru"],
+    "temperature": ["fever", "hot", "cold", "garam", "thanda", "jwara"],
+    "jaundice_onset": ["yellow", "peela", "jaundice", "haladi"],
+    "jaundice_extent": ["yellow", "peela", "jaundice", "haladi"],
+    "convulsions": ["fit", "jhatke", "convuls", "seizure"],
+    "movement": ["move", "active", "hilta", "lethargic"],
 }
 
 
