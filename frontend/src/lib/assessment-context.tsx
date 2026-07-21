@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { submitAssessment, mapRiskLevel } from "./api";
 
 export type Risk = "low" | "medium" | "high";
 
@@ -281,14 +282,54 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
 
   const finalize = useCallback((): Assessment => {
     if (!draft) throw new Error("No draft");
-    const result = classify(draft.messages);
+
+    // Collect all user messages into a single transcript for the backend.
+    const transcript = draft.messages
+      .filter((m) => m.role === "user")
+      .map((m) => m.text)
+      .join(" ");
+
+    // Return a placeholder Assessment immediately so the UI can navigate;
+    // we kick off the real backend call asynchronously and update history
+    // when it resolves.
+    const fallbackResult = classify(draft.messages);
     const assessment: Assessment = {
       id: draft.id,
       createdAt: Date.now(),
       method: draft.method,
       messages: draft.messages,
-      ...result,
+      ...fallbackResult,
     };
+
+    // Kick off real backend assessment (non-blocking — UI already navigating)
+    submitAssessment({ transcript, language: "en", conversation_id: draft.id })
+      .then((res) => {
+        const risk = mapRiskLevel(res.risk_level);
+        const backendAssessment: Assessment = {
+          id: res.conversation_id,
+          createdAt: Date.now(),
+          method: draft.method,
+          messages: draft.messages,
+          risk,
+          summary: res.recommendation ?? fallbackResult.summary,
+          explanation: res.recommendation ?? fallbackResult.explanation,
+          nextSteps: res.next_steps.length ? res.next_steps : fallbackResult.nextSteps,
+          symptoms: fallbackResult.symptoms, // derived from messages, same either way
+        };
+        // Replace the optimistic entry with the real backend result
+        setHistory((h) =>
+          h.map((a) => (a.id === draft.id || a.id === res.conversation_id ? backendAssessment : a))
+        );
+        setLastResult(backendAssessment);
+      })
+      .catch((err) => {
+        console.warn(
+          "[Naavya] Backend /assess call failed — using local classification fallback.",
+          err,
+        );
+        // fallback already set; nothing more to do
+      });
+
     setHistory((h) => [assessment, ...h]);
     setLastResult(assessment);
     setDraft(null);

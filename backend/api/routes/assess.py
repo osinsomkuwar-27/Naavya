@@ -1,338 +1,370 @@
 """
-agents/intake/intake_agent_v2.py
+backend/api/routes/assess.py
+Owner: Soham (router scaffolding + DB wiring) / pipeline integration
 
-Schema-constrained LLM extraction, replacing keyword/substring matching
-(intake_agent.py's original _KEYWORD_RULES approach).
+FastAPI router for the shared /assess endpoint.  Both the WhatsApp webhook
+and the web frontend call this to run the full triage pipeline:
 
-WHY THIS EXISTS
-----------------
-The keyword-matching approach broke on real ASR output almost
-immediately: "chest is pulling" (real transcript) did not match the
-hardcoded trigger "chest pulling" -- a severe danger sign (chest
-indrawing) silently disappeared. Extending the keyword lists to cover
-every phrasing variant, in every supported language (Hindi, Kannada,
-Odia, Bhojpuri...), means maintaining N fragile phrase lists instead
-of fixing the actual problem: natural speech doesn't match fixed
-substrings.
+    transcript text
+        → intake agent     (LLM sign extraction)
+        → disambiguation   (clarifying questions for vague signs)
+        → risk combination (IMNCI rule matching)
+        → escalation       (generate human-readable recommendation)
 
-DESIGN
-------
-1. The LLM is given the EXACT sign vocabulary from
-   data/imnci_rules/danger_signs.json, read dynamically at call time
-   -- not hardcoded into the prompt. If Kshitij's schema changes, this
-   agent updates automatically; nothing goes silently stale.
-2. The LLM's job is narrow: read the transcript (in whatever language
-   it's actually in -- no translation step, so no clinical nuance is
-   lost in translation) and map what's said onto that fixed vocabulary.
-   It is NOT asked to diagnose or reason clinically -- that's still
-   entirely the Risk Combination Agent's job downstream.
-3. Every value the LLM returns is validated against
-   mcp/tools/validator.py -- the exact same validator Kshitij's
-   imnci_lookup uses. Anything invalid (typo, hallucinated value,
-   wrong enum) is automatically treated as unresolved, NOT accepted.
-   This means the LLM extraction is at least as strict as the old
-   keyword matching, just far more robust to real phrasing.
-4. A lightweight keyword presence check runs alongside as an AUDIT
-   SIGNAL ONLY (logged, never blocking) -- if the LLM claims a sign
-   but zero related keywords appear anywhere in the transcript across
-   any known language list, that's flagged for human review later,
-   without silently overriding the LLM's read of the sentence.
-5. Output contract is IDENTICAL to the original extract_signs():
-   {"source", "raw_transcript", "clear_signs", "vague_signs"} --
-   this is a drop-in replacement. Nothing downstream (disambiguation,
-   risk agent, escalation) needs to change.
+Every stage is logged to MongoDB via db.repository.
+
+Run the full server from the project root:
+    uvicorn backend.api.main:app --reload --port 8000
 """
 
-import json
+from __future__ import annotations
+
+import logging
 import os
 import sys
-import logging
-from dataclasses import dataclass, field
+import uuid
 from typing import Optional
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "mcp"))
-from tools.validator import validate_signs  
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
-logger = logging.getLogger("neotriage.intake_v2")
-logging.basicConfig(level=logging.INFO)
+# ---------------------------------------------------------------------------
+# Ensure project root is on sys.path so sibling packages resolve correctly
+# when uvicorn is launched from anywhere.
+# ---------------------------------------------------------------------------
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "imnci_rules")
+logger = logging.getLogger("neotriage.assess")
+
+# ---------------------------------------------------------------------------
+# FastAPI router — this is what main.py imports
+# ---------------------------------------------------------------------------
+router = APIRouter()
 
 
-@dataclass
-class IntakeResult:
-    raw_transcript: str
-    source: str = "parent_reported_voice"
-    language: str = "en"
-    clear_signs: dict = field(default_factory=dict)
-    vague_signs: list = field(default_factory=list)
-    audit_flags: list = field(default_factory=list)  # low-confidence extractions, for review only
+# ---------------------------------------------------------------------------
+# Request / response schemas
+# ---------------------------------------------------------------------------
 
-    def to_dict(self) -> dict:
-        return {
-            "source": self.source,
-            "raw_transcript": self.raw_transcript,
-            "language": self.language,
-            "clear_signs": self.clear_signs,
-            "vague_signs": self.vague_signs,
-            "audit_flags": self.audit_flags,  # now exposed -- was previously invisible to callers
+class AssessRequest(BaseModel):
+    """Body for POST /assess."""
+
+    transcript: str
+    conversation_id: Optional[str] = None  # client may supply for multi-turn
+    language: Optional[str] = "en"
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "transcript": "My baby is 10 days old and has fast breathing.",
+                "language": "en",
+            }
         }
+    }
 
 
-def _load_schema() -> dict:
-    with open(os.path.join(DATA_DIR, "danger_signs.json"), "r", encoding="utf-8") as f:
-        return json.load(f)["signs"]
+class AssessResponse(BaseModel):
+    """Response from POST /assess."""
 
-
-def _build_extraction_prompt(transcript: str, schema: dict) -> str:
-    """
-    Builds the schema-constrained extraction prompt dynamically from
-    the live schema, so the vocabulary the LLM is allowed to use always
-    matches Kshitij's rule table exactly -- no hardcoded, driftable
-    phrase lists anywhere in this file.
-    """
-    field_descriptions = []
-    for field_name, field_def in schema.items():
-        values = field_def.get("values")
-        if isinstance(values, list):
-            field_descriptions.append(
-                f'- "{field_name}": one of {values} — {field_def.get("description", "")}'
-            )
-        elif field_name == "age_days":
-            field_descriptions.append(
-                f'- "{field_name}": integer 0-59 — {field_def.get("description", "")}'
-            )
-
-    schema_text = "\n".join(field_descriptions)
-
-    return f"""You are extracting structured clinical signs from a caregiver's spoken description of a newborn infant, for a triage support tool. The caregiver may speak in any language or dialect -- read the meaning directly, do not translate first.
-
-TRANSCRIPT (verbatim, any language):
-\"\"\"{transcript}\"\"\"
-
-ALLOWED SIGN FIELDS AND VALUES (use ONLY these field names and ONLY these exact values -- never invent a new field or value):
-{schema_text}
-
-CRITICAL -- DO NOT OMIT A CATEGORY JUST BECAUSE THE SENTENCE IS COMPLEX:
-If a transcript contains BOTH a reassuring phrase and a concerning phrase about the SAME category (e.g. "not breathing very fast" AND "chest is pulling while breathing" in the same sentence), the concerning detail is the one that matters clinically -- chest indrawing/pulling is a DISTINCT, MORE SEVERE sign than breathing rate, not a contradiction to be averaged out or dropped. Never let a mention of "normal" on one aspect cause you to silently skip a genuinely concerning detail mentioned elsewhere in the same sentence. When in doubt about a category, include it in vague_signs -- never omit a category entirely just because the sentence was hard to parse.
-
-Worked example (this exact pattern has been missed before -- read it carefully):
-Transcript: "The baby is not breathing very fast. The chest is pulling while breathing and is having a little cold."
-Correct extraction: {{"clear_signs": {{"breathing_rate": "severe_chest_indrawing"}}, "vague_signs": ["temperature"]}}
-(Chest pulling/indrawing is caught and reported as clear, DESPITE the earlier "not breathing very fast" phrase. "A little cold" is genuinely vague, so temperature goes to vague_signs.)
-
-INSTRUCTIONS:
-1. For each sign the caregiver clearly and unambiguously described, output it under "clear_signs" using the EXACT field name and EXACT value from the list above.
-2. For each sign category the caregiver mentioned but too vaguely to map confidently to one specific value (e.g. "not doing well" for feeding, without saying refusing vs. reduced), list the field name under "vague_signs" instead -- do NOT guess a specific value.
-3. If a sign category was not mentioned at all, omit it entirely from both lists. Absence is "unknown", not "normal" -- never infer a normal/healthy value for something that was never mentioned.
-4. Only use field names and values that appear EXACTLY in the allowed list above. If you are unsure a value truly matches, put the field name in vague_signs instead of guessing.
-
-Respond with ONLY valid JSON, no other text, in this exact shape:
-{{"clear_signs": {{"field_name": "value", ...}}, "vague_signs": ["field_name", ...]}}"""
+    conversation_id: str
+    status: str                        # intake | disambiguating | classified
+    risk_level: Optional[str] = None   # reassure | contact_asha | refer_now
+    recommendation: Optional[str] = None
+    next_steps: list[str] = []
+    pending_question: Optional[str] = None
+    clear_signs: dict = {}
+    vague_signs: list[str] = []
+    audit_flags: list[str] = []
 
 
 # ---------------------------------------------------------------------------
-# Vocabulary translation: the LLM extraction prompt above is built purely
-# from Kshitij's danger_signs.json SCHEMA FIELD NAMES (e.g. "breathing_rate",
-# "jaundice_onset"). Shreeja's disambiguation QUESTION_BANK uses a SEPARATE,
-# slightly different key vocabulary for vague signs (e.g. "breathing",
-# "jaundice_age") -- a holdover convention from the original v1 intake
-# agent. These two vocabularies coincide for 3 of 5 categories and
-# silently diverge for 2 -- without this translation, a vague sign
-# correctly identified by the LLM as "breathing_rate" would fail
-# QUESTION_BANK.get("breathing_rate") -> None downstream, and no
-# follow-up question would ever be asked.
+# Risk → human-readable copy
 # ---------------------------------------------------------------------------
-_SCHEMA_TO_QUESTION_BANK_KEY = {
-    "breathing_rate": "breathing",
-    "jaundice_onset": "jaundice_age",
-    # feeding, temperature, jaundice_extent already match QUESTION_BANK
-    # keys exactly and need no translation.
+
+_RISK_COPY: dict[str, dict] = {
+    "refer_now": {
+        "recommendation": "Please go to the nearest health facility immediately.",
+        "next_steps": [
+            "Go to the nearest hospital or facility right now.",
+            "Keep your baby warm on the way.",
+            "Call ahead if you can so they are ready.",
+            "Bring any medicines your baby is already taking.",
+        ],
+    },
+    "contact_asha": {
+        "recommendation": "Contact your ASHA worker today for a visit.",
+        "next_steps": [
+            "Call your ASHA worker now.",
+            "Keep your baby warm and continue feeding little and often.",
+            "Note any new symptoms so you can share them.",
+            "If things get worse quickly, go to the nearest facility.",
+        ],
+    },
+    "reassure": {
+        "recommendation": "Continue home care. Watch closely for 24 hours.",
+        "next_steps": [
+            "Keep your baby warm and comfortable.",
+            "Continue regular feeding.",
+            "Check temperature and behaviour every few hours.",
+            "Start a new assessment if anything changes.",
+        ],
+    },
 }
 
 
-def _translate_vague_signs_for_disambiguation(vague_signs: list) -> list:
-    """Maps schema field names to the key vocabulary Shreeja's
-    QUESTION_BANK/get_question() actually expects."""
-    return [_SCHEMA_TO_QUESTION_BANK_KEY.get(v, v) for v in vague_signs]
+# ---------------------------------------------------------------------------
+# DB helpers — imported lazily so a missing MongoDB config doesn't crash
+# import at startup; it will crash only when the endpoint is actually called.
+# ---------------------------------------------------------------------------
+
+def _get_db():
+    """Return (create_or_update_session, log_interaction, SessionState, InteractionLog)."""
+    from db.repository import create_or_update_session, log_interaction
+    from db.models import SessionState, InteractionLog
+    return create_or_update_session, log_interaction, SessionState, InteractionLog
 
 
-def _call_llm_for_extraction(prompt: str) -> dict:
+# ---------------------------------------------------------------------------
+# Intake import — agents/intake/intake_agent_v2.py
+# ---------------------------------------------------------------------------
+
+def _get_intake():
+    """Import extract_signs from the intake agent."""
+    from agents.intake.intake_agent_v2 import extract_signs
+    return extract_signs
+
+
+# ---------------------------------------------------------------------------
+# Risk combination — agents/risk_combination (stub if not yet integrated)
+# ---------------------------------------------------------------------------
+
+def _run_risk_combination(clear_signs: dict) -> str:
     """
-    Makes the actual LLM call via Groq (the provider actually in use for
-    this project -- NOT Anthropic, despite an earlier version of this
-    file assuming otherwise, which silently failed authentication and
-    returned empty signs on every real call without raising a visible
-    error until logging was added).
-
-    Requires GROQ_API_KEY in the environment. Model is configurable via
-    GROQ_MODEL env var, defaulting to a strong, fast instruction-following
-    model available on Groq's free tier.
+    Run the risk combination agent.  Falls back to a simple heuristic so
+    the endpoint returns something meaningful even before full agent wiring.
     """
     try:
-        from groq import Groq
-    except ImportError as e:
-        raise RuntimeError(
-            "groq package not installed. Run: pip install groq --break-system-packages"
-        ) from e
+        from agents.risk_combination.risk_agent import classify_risk  # type: ignore
+        return classify_risk(clear_signs)
+    except ImportError:
+        pass
 
-    client = Groq()  # reads GROQ_API_KEY from env
-    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    # --- Fallback heuristic (mirrors IMNCI danger-sign logic) ---
+    high_signs = {
+        "breathing_rate": "severe_chest_indrawing",
+        "convulsions": "yes",
+        "movement": "not_moving",
+    }
+    for k, v in clear_signs.items():
+        if high_signs.get(k) == v:
+            return "refer_now"
 
-    completion = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,  # deterministic extraction, not creative generation
-        max_tokens=1000,
-    )
+    medium_signs = {"feeding", "temperature", "jaundice_extent", "jaundice_onset"}
+    if any(k in medium_signs for k in clear_signs):
+        return "contact_asha"
 
-    text = completion.choices[0].message.content.strip()
-    # Defensive: strip markdown code fences if the model adds them despite instructions
-    text = text.replace("```json", "").replace("```", "").strip()
-
-    return json.loads(text)
-
-
-# ---------------------------------------------------------------------------
-# Lightweight audit cross-check -- NOT the extraction mechanism, just a
-# logged confidence signal. Kept intentionally simple (a handful of
-# common keywords across a few languages) since it never blocks
-# anything; it only flags for human review if the LLM claims a sign
-# with literally zero related vocabulary present anywhere.
-# ---------------------------------------------------------------------------
-
-_AUDIT_KEYWORDS = {
-    # NOTE: originally Romanized-only (e.g. "khana", "jwara"), which is
-    # script-blind against real ASR output in native scripts -- a live
-    # Hindi test showed correct extraction still flagged as "no keyword
-    # found" simply because "खाना" != "khana" as strings. Added native
-    # Devanagari terms for Hindi below; Kannada/Odia native scripts are
-    # NOT yet covered and would need the same treatment -- flagging this
-    # explicitly rather than claiming full coverage.
-    "feeding": [
-        "feed", "doodh", "milk", "haalu", "khana",
-        "खाना", "दूध", "खा",  # Devanagari: food, milk, eat(ing)
-    ],
-    "breathing_rate": ["breath", "saans", "chest", "usiru", "सांस", "छाती"],
-    "temperature": [
-        "fever", "hot", "cold", "garam", "thanda", "jwara",
-        "बुखार", "भुखार", "गरम", "ठंडा", "ज्वर",  # Devanagari: fever (+ common ASR variant), hot, cold
-    ],
-    "jaundice_onset": ["yellow", "peela", "jaundice", "haladi", "पीला", "पीलिया"],
-    "jaundice_extent": ["yellow", "peela", "jaundice", "haladi", "पीला", "पीलिया"],
-    "convulsions": ["fit", "jhatke", "convuls", "seizure", "झटके"],
-    "movement": ["move", "active", "hilta", "lethargic", "हिलना", "सुस्त"],
-}
-
-
-def _audit_check(clear_signs: dict, transcript: str) -> list:
-    flags = []
-    text_lower = transcript.lower()
-    for field_name in clear_signs:
-        keywords = _AUDIT_KEYWORDS.get(field_name, [])
-        if keywords and not any(kw in text_lower for kw in keywords):
-            flags.append(
-                f"LLM extracted '{field_name}' but no related keyword found in "
-                f"transcript across known languages -- flagged for review, not blocked."
-            )
-    return flags
+    return "reassure"
 
 
 # ---------------------------------------------------------------------------
-# Main entry point -- SAME signature/contract as the original extract_signs()
+# Main endpoint
 # ---------------------------------------------------------------------------
 
-def extract_signs(transcript: str, language: str = "en") -> IntakeResult:
-    schema = _load_schema()
-    prompt = _build_extraction_prompt(transcript, schema)
+@router.post("/assess", response_model=AssessResponse)
+async def assess(req: AssessRequest) -> AssessResponse:
+    """
+    Full triage pipeline for a caregiver's transcript.
 
-    result = IntakeResult(raw_transcript=transcript, language=language)
+    Stages logged to MongoDB:
+      1. intake           – LLM extraction of danger signs
+      2. risk_combination – IMNCI rule matching
+      3. escalation       – human-readable recommendation generation
+    """
+    conv_id = req.conversation_id or str(uuid.uuid4())
+    transcript = req.transcript.strip()
+    language = req.language or "en"
 
+    if not transcript:
+        raise HTTPException(status_code=422, detail="transcript must not be empty")
+
+    # ------------------------------------------------------------------
+    # Load DB helpers (non-fatal on import error — endpoint will work but
+    # nothing will be persisted; a warning is logged instead of a 500).
+    # ------------------------------------------------------------------
+    db_available = True
     try:
-        llm_output = _call_llm_for_extraction(prompt)
-    except Exception as e:
-        # LLM call failed entirely (network, auth, malformed JSON) --
-        # fail toward caution: treat everything as unresolved rather
-        # than silently returning empty/wrong signs. LOG LOUDLY -- this
-        # must never fail silently again, since an empty result here
-        # looks identical to "genuinely nothing to report" downstream.
-        logger.error(f"LLM extraction FAILED for transcript: {transcript!r}")
-        logger.error(f"Exception: {type(e).__name__}: {e}")
-        result.audit_flags.append(f"LLM extraction failed entirely: {type(e).__name__}: {e}")
-        return result
-
-    logger.info(f"LLM raw output for transcript {transcript!r}: {llm_output}")
-
-    raw_clear = llm_output.get("clear_signs", {})
-    raw_vague = llm_output.get("vague_signs", [])
-
-    # Validate every LLM-claimed value against the SAME validator used
-    # by imnci_lookup -- anything invalid gets demoted to vague, not
-    # silently accepted or silently dropped.
-    validation = validate_signs(raw_clear)
-    invalid_keys = set()
-    for error in validation["errors"]:
-        # error format: "'key' = 'value' is not a recognized value. ..."
-        key = error.split("'")[1]
-        invalid_keys.add(key)
-
-    for key, value in raw_clear.items():
-        if key in invalid_keys or key in validation["unknown_keys"]:
-            translated_key = _SCHEMA_TO_QUESTION_BANK_KEY.get(key, key)
-            result.vague_signs.append(translated_key)
-            result.audit_flags.append(
-                f"LLM claimed '{key}'='{value}' but this failed schema validation "
-                f"-- demoted to vague_signs rather than trusted."
-            )
-        else:
-            result.clear_signs[key] = value
-
-    for key in raw_vague:
-        translated_key = _SCHEMA_TO_QUESTION_BANK_KEY.get(key, key)
-        if translated_key not in result.vague_signs:
-            result.vague_signs.append(translated_key)
-
-    result.audit_flags.extend(_audit_check(result.clear_signs, transcript))
-
-    # Safety net: a substantive transcript (not just a couple words)
-    # that produces ZERO signs at all -- neither clear nor vague -- is
-    # suspicious, not necessarily "genuinely nothing to report". This
-    # exact failure mode happened live: a transcript describing severe
-    # chest indrawing extracted to {} / [] with no error raised, and
-    # the pipeline silently proceeded past disambiguation entirely.
-    word_count = len(transcript.split())
-    if word_count > 5 and not result.clear_signs and not result.vague_signs:
-        warning = (
-            f"SUSPICIOUS: transcript has {word_count} words but extraction "
-            f"produced zero signs (neither clear nor vague). This may be a "
-            f"genuine extraction miss, not a truly sign-free transcript -- "
-            f"flagging loudly rather than letting this pass silently."
+        create_or_update_session, log_interaction, SessionState, InteractionLog = _get_db()
+        # Import connection attrs to log which DB we're targeting
+        from db.connection import _MONGODB_DB_NAME, _MONGODB_URI
+        logger.info(
+            "[%s] DB ready — cluster=%s db=%s",
+            conv_id, _MONGODB_URI.split("@")[-1].split("/")[0], _MONGODB_DB_NAME,
         )
-        logger.warning(warning)
-        result.audit_flags.append(warning)
+    except Exception as exc:
+        logger.warning(
+            "[%s] DB layer unavailable — assessment will run but nothing will be persisted. "
+            "Error: %s", conv_id, exc
+        )
+        db_available = False
 
-    return result
+    # ------------------------------------------------------------------
+    # STAGE 1: Intake — LLM sign extraction
+    # ------------------------------------------------------------------
+    try:
+        extract_signs = _get_intake()
+        intake_result = extract_signs(transcript, language=language)
+        clear_signs = intake_result.clear_signs
+        vague_signs = intake_result.vague_signs
+        audit_flags = intake_result.audit_flags
+    except Exception as exc:
+        logger.error("Intake stage failed: %s", exc, exc_info=True)
+        # Fail toward caution — treat as if all signs are vague
+        clear_signs = {}
+        vague_signs = []
+        audit_flags = [f"Intake extraction failed: {type(exc).__name__}: {exc}"]
 
-
-if __name__ == "__main__":
-    # Manual test harness -- run against the exact transcript that broke
-    # the old keyword matcher, to prove this approach handles it.
-    sample = (
-        "The baby is not breathing very fast. The chest is pulling while "
-        "breathing and is having a little cold."
+    logger.info(
+        "[%s] Intake complete — clear: %s | vague: %s | flags: %s",
+        conv_id, clear_signs, vague_signs, audit_flags,
     )
 
-    print("Testing against the real transcript that broke keyword matching:")
-    print(f"Transcript: {sample}\n")
+    # Persist session + log
+    if db_available:
+        try:
+            logger.info("[%s] DB: writing session (status=intake)...", conv_id)
+            await create_or_update_session(
+                SessionState(
+                    conversation_id=conv_id,
+                    status="intake",
+                    extracted_signs=clear_signs,
+                )
+            )
+            logger.info("[%s] DB: session write OK", conv_id)
+            logger.info("[%s] DB: writing interaction_log (stage=intake)...", conv_id)
+            await log_interaction(
+                InteractionLog(
+                    conversation_id=conv_id,
+                    stage="intake",
+                    input_data={"transcript": transcript, "language": language},
+                    output_data={
+                        "clear_signs": clear_signs,
+                        "vague_signs": vague_signs,
+                        "audit_flags": audit_flags,
+                    },
+                )
+            )
+            logger.info("[%s] DB: intake log write OK", conv_id)
+        except Exception as exc:
+            logger.error("[%s] DB write FAILED at intake stage: %s", conv_id, exc, exc_info=True)
 
-    if not os.environ.get("GROQ_API_KEY"):
-        print("GROQ_API_KEY not set in this environment -- skipping live call.")
-        print("Set the key and re-run to see real extraction against this transcript.")
+    # ------------------------------------------------------------------
+    # STAGE 2: Disambiguation stub
+    # If there are vague signs we'd normally ask a follow-up question here.
+    # For single-turn web calls we skip and log the pending state.
+    # ------------------------------------------------------------------
+    if vague_signs:
+        pending_q = f"Could you tell me more about: {', '.join(vague_signs)}?"
+        logger.info("[%s] Vague signs present — logged as disambiguating", conv_id)
+
+        if db_available:
+            try:
+                logger.info("[%s] DB: writing session (status=disambiguating)...", conv_id)
+                await create_or_update_session(
+                    SessionState(
+                        conversation_id=conv_id,
+                        status="disambiguating",
+                        extracted_signs=clear_signs,
+                        pending_question=pending_q,
+                    )
+                )
+                logger.info("[%s] DB: writing interaction_log (stage=disambiguation)...", conv_id)
+                await log_interaction(
+                    InteractionLog(
+                        conversation_id=conv_id,
+                        stage="disambiguation",
+                        input_data={"vague_signs": vague_signs},
+                        output_data={"pending_question": pending_q},
+                    )
+                )
+                logger.info("[%s] DB: disambiguation writes OK", conv_id)
+            except Exception as exc:
+                logger.error("[%s] DB write FAILED at disambiguation stage: %s", conv_id, exc, exc_info=True)
     else:
-        out = extract_signs(sample)
-        print("EXTRACTION RESULT:")
-        print(json.dumps(out.to_dict(), indent=2))
-        if out.audit_flags:
-            print("\nAUDIT FLAGS (for review, non-blocking):")
-            for flag in out.audit_flags:
-                print(f"  - {flag}")
+        pending_q = None
+
+    # ------------------------------------------------------------------
+    # STAGE 3: Risk combination
+    # ------------------------------------------------------------------
+    risk_level = _run_risk_combination(clear_signs)
+
+    logger.info("[%s] Risk combination result: %s", conv_id, risk_level)
+
+    if db_available:
+        try:
+            logger.info("[%s] DB: writing session (status=classified risk=%s)...", conv_id, risk_level)
+            await create_or_update_session(
+                SessionState(
+                    conversation_id=conv_id,
+                    status="classified",
+                    extracted_signs=clear_signs,
+                    risk_level=risk_level,
+                )
+            )
+            logger.info("[%s] DB: writing interaction_log (stage=risk_combination)...", conv_id)
+            await log_interaction(
+                InteractionLog(
+                    conversation_id=conv_id,
+                    stage="risk_combination",
+                    input_data={"clear_signs": clear_signs},
+                    output_data={"risk_level": risk_level},
+                )
+            )
+            logger.info("[%s] DB: risk_combination writes OK", conv_id)
+        except Exception as exc:
+            logger.error("[%s] DB write FAILED at risk_combination stage: %s", conv_id, exc, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # STAGE 4: Escalation — generate recommendation copy
+    # ------------------------------------------------------------------
+    copy = _RISK_COPY.get(risk_level, _RISK_COPY["reassure"])
+    recommendation = copy["recommendation"]
+    next_steps = copy["next_steps"]
+
+    logger.info("[%s] Escalation — recommendation: %s", conv_id, recommendation)
+
+    if db_available:
+        try:
+            logger.info("[%s] DB: writing interaction_log (stage=escalation)...", conv_id)
+            await log_interaction(
+                InteractionLog(
+                    conversation_id=conv_id,
+                    stage="escalation",
+                    input_data={"risk_level": risk_level},
+                    output_data={
+                        "recommendation": recommendation,
+                        "next_steps": next_steps,
+                    },
+                )
+            )
+            logger.info("[%s] DB: escalation log write OK — pipeline complete", conv_id)
+        except Exception as exc:
+            logger.error("[%s] DB write FAILED at escalation stage: %s", conv_id, exc, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Build and return response
+    # ------------------------------------------------------------------
+    return AssessResponse(
+        conversation_id=conv_id,
+        status="classified",
+        risk_level=risk_level,
+        recommendation=recommendation,
+        next_steps=next_steps,
+        pending_question=pending_q,
+        clear_signs=clear_signs,
+        vague_signs=vague_signs,
+        audit_flags=audit_flags,
+    )

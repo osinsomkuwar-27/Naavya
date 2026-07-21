@@ -7,7 +7,8 @@ Provides a single shared Motor client, the database handle, and named
 collection references.  Every other module in the project should import
 collections *from here* rather than constructing their own client.
 
-Environment variables (loaded from backend/api/.env or the shell):
+Environment variables (loaded from <project_root>/.env, then backend/api/.env as fallback,
+or the shell):
     MONGODB_URI      - full Atlas / MongoDB connection string (required)
     MONGODB_DB_NAME  - database name (required)
 
@@ -32,12 +33,18 @@ from motor.motor_asyncio import (
 # ---------------------------------------------------------------------------
 # Environment loading
 # ---------------------------------------------------------------------------
-# Resolve the .env relative to this file's location so the module works
-# regardless of where `uvicorn` / pytest is launched from.
+# Load the canonical root .env first (project root), then fall back to
+# backend/api/.env for backward compatibility.
+# Shell variables always take priority (override=False).
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
-_ENV_PATH = _PROJECT_ROOT / "backend" / "api" / ".env"
-
-load_dotenv(dotenv_path=_ENV_PATH, override=False)  # shell vars take priority
+_ENV_CANDIDATES = [
+    _PROJECT_ROOT / ".env",                      # canonical root location
+    _PROJECT_ROOT / "backend" / "api" / ".env",  # legacy fallback
+]
+for _env_path in _ENV_CANDIDATES:
+    if _env_path.exists():
+        load_dotenv(dotenv_path=_env_path, override=False)
+        break
 
 
 def _require_env(key: str) -> str:
@@ -46,8 +53,8 @@ def _require_env(key: str) -> str:
     if not value:
         raise EnvironmentError(
             f"[db/connection.py] Required environment variable '{key}' is not set. "
-            f"Add it to backend/api/.env or export it in your shell before starting "
-            f"the server."
+            f"Add it to the project root .env (Naavya/.env) or export it in your "
+            f"shell before starting the server."
         )
     return value
 

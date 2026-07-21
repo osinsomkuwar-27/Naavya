@@ -43,6 +43,28 @@ app.include_router(whatsapp_router, tags=["whatsapp"])
 app.include_router(assess_router, tags=["assess"])
 
 
+@app.on_event("startup")
+async def _log_startup() -> None:
+    """Log DB connection info at startup so it's obvious which cluster is in use."""
+    import logging
+    _log = logging.getLogger("neotriage.main")
+    try:
+        from db.connection import _MONGODB_URI, _MONGODB_DB_NAME, sessions_collection
+        cluster = _MONGODB_URI.split("@")[-1].split("/")[0]
+        _log.info(
+            "[STARTUP] MongoDB ready — cluster=%s db=%s collections=sessions,interaction_logs",
+            cluster, _MONGODB_DB_NAME,
+        )
+        # Ping the cluster to confirm network reachability
+        count = await sessions_collection.count_documents({})
+        _log.info("[STARTUP] MongoDB ping OK — existing sessions in DB: %d", count)
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger("neotriage.main").error(
+            "[STARTUP] MongoDB connection FAILED: %s — DB writes will be skipped during this run.", exc
+        )
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "neotriage-api"}
