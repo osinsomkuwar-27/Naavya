@@ -1,0 +1,187 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Naavya design system.
+ * Blue-dominant, calm and spacious. Success / Warning / Danger are RESERVED
+ * exclusively for risk-level communication (Recommendation, History badges,
+ * ASHA banners). Do not use those tokens decoratively elsewhere.
+ */
+
+@theme inline {
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-2xl: 28px;
+  --radius-3xl: 32px;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Poppins", "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-destructive: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-destructive-foreground: var(--danger-foreground);
+  --color-danger-soft: var(--danger-soft);
+
+  --shadow-soft: 0 4px 16px rgba(17, 24, 39, 0.06);
+  --shadow-card: 0 8px 28px rgba(17, 24, 39, 0.07);
+  --shadow-lift: 0 18px 48px -18px rgba(21, 101, 192, 0.28);
+}
+
+:root {
+  --radius: 24px;
+
+  /* Neutrals */
+  --background: oklch(0.985 0.004 240);         /* #F8FAFC */
+  --foreground: oklch(0.21 0.03 260);           /* #111827 */
+  --surface: oklch(1 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.03 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.03 260);
+
+  --muted: oklch(0.968 0.006 250);
+  --muted-foreground: oklch(0.52 0.02 260);     /* #6B7280 */
+  --border: oklch(0.92 0.006 260);              /* #E5E7EB */
+  --input: oklch(0.92 0.006 260);
+
+  /* Brand blues */
+  --primary: oklch(0.52 0.16 253);              /* #1565C0 */
+  --primary-foreground: oklch(0.99 0.003 240);
+  --primary-soft: oklch(0.96 0.03 250);
+  --secondary: oklch(0.71 0.13 240);            /* #42A5F5 */
+  --secondary-foreground: oklch(0.21 0.03 260);
+  --accent: oklch(0.55 0.16 252);               /* #1976D2 */
+  --accent-foreground: oklch(0.99 0.003 240);
+  --ring: oklch(0.55 0.16 252 / 0.55);
+
+  /* Semantic (reserved for risk) */
+  --success: oklch(0.53 0.14 145);              /* #2E7D32 */
+  --success-foreground: oklch(0.99 0.003 240);
+  --success-soft: oklch(0.95 0.05 145);
+  --warning: oklch(0.79 0.14 80);               /* #F9A825 */
+  --warning-foreground: oklch(0.25 0.03 80);
+  --warning-soft: oklch(0.97 0.05 85);
+  --danger: oklch(0.58 0.22 27);                /* #D32F2F */
+  --danger-foreground: oklch(0.99 0.003 240);
+  --danger-soft: oklch(0.96 0.04 25);
+
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--muted);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+/* Motion */
+@keyframes nt-pulse-ring {
+  0% { transform: scale(0.85); opacity: 0.7; }
+  70% { transform: scale(1.6); opacity: 0; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@keyframes nt-bar {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+@keyframes nt-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes nt-reveal {
+  0% { opacity: 0; transform: scale(0.96); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes nt-dot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+@keyframes nt-breath {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+
+@utility nt-pulse-ring {
+  animation: nt-pulse-ring 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@utility nt-fade-up {
+  animation: nt-fade-up 200ms ease-out both;
+}
+@utility nt-reveal {
+  animation: nt-reveal 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@utility nt-breath {
+  animation: nt-breath 3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
