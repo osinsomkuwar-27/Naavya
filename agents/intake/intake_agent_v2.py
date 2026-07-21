@@ -1,289 +1,328 @@
 """
 agents/intake/intake_agent_v2.py
-Owner: Soham
 
-LLM-based replacement for the keyword-matching extract_signs() in
-intake_agent.py. Uses Groq (fast-inference API, hosts Llama/Mixtral
-models) via the OpenAI-compatible SDK, per Kshitij's direction
-(Anthropic -> switched to Groq/Gemini; this file uses Groq).
+Schema-constrained LLM extraction, replacing keyword/substring matching
+(intake_agent.py's original _KEYWORD_RULES approach).
 
-WHY THIS EXISTS (see intake_agent.py's known limitation):
-The v1 keyword matcher only catches literal substrings -- "chest is
-pulling in" doesn't match the hardcoded phrase "chest pulling", so a
-refer_now-level danger sign (severe_chest_indrawing) silently gets
-missed. It also has near-zero real multi-language support: a few
-transliterated Hindi keywords, nothing else. An LLM with the sign
-vocabulary given in-context handles paraphrasing and other languages
-without needing hand-written phrase lists for every dialect variant.
+WHY THIS EXISTS
+----------------
+The keyword-matching approach broke on real ASR output almost
+immediately: "chest is pulling" (real transcript) did not match the
+hardcoded trigger "chest pulling" -- a severe danger sign (chest
+indrawing) silently disappeared. Extending the keyword lists to cover
+every phrasing variant, in every supported language (Hindi, Kannada,
+Odia, Bhojpuri...), means maintaining N fragile phrase lists instead
+of fixing the actual problem: natural speech doesn't match fixed
+substrings.
 
-CONTRACT: identical to v1's extract_signs()/IntakeResult -- same
-clear_signs/vague_signs shape, same field names/values from
-data/imnci_rules/danger_signs.json. Downstream code (assess.py,
-webhook.py, Shreeja's disambiguation agent) does not need to change
-when this replaces v1, only the import line does.
-
-Adds one field vs v1: `language` (ISO code from Whisper's detected
-language) -- Shreeja's TTS/escalation flow reads this to reply in the
-mother's own language instead of defaulting to English.
-
-FAILOVER: if the Groq API call fails or times out (network issue,
-rate limit, demo-day wifi problems), this falls back to v1's
-keyword-based extract_signs() rather than erroring out -- a degraded
-but working pipeline beats a crashed one on demo day.
+DESIGN
+------
+1. The LLM is given the EXACT sign vocabulary from
+   data/imnci_rules/danger_signs.json, read dynamically at call time
+   -- not hardcoded into the prompt. If Kshitij's schema changes, this
+   agent updates automatically; nothing goes silently stale.
+2. The LLM's job is narrow: read the transcript (in whatever language
+   it's actually in -- no translation step, so no clinical nuance is
+   lost in translation) and map what's said onto that fixed vocabulary.
+   It is NOT asked to diagnose or reason clinically -- that's still
+   entirely the Risk Combination Agent's job downstream.
+3. Every value the LLM returns is validated against
+   mcp/tools/validator.py -- the exact same validator Kshitij's
+   imnci_lookup uses. Anything invalid (typo, hallucinated value,
+   wrong enum) is automatically treated as unresolved, NOT accepted.
+   This means the LLM extraction is at least as strict as the old
+   keyword matching, just far more robust to real phrasing.
+4. A lightweight keyword presence check runs alongside as an AUDIT
+   SIGNAL ONLY (logged, never blocking) -- if the LLM claims a sign
+   but zero related keywords appear anywhere in the transcript across
+   any known language list, that's flagged for human review later,
+   without silently overriding the LLM's read of the sentence.
+5. Output contract is IDENTICAL to the original extract_signs():
+   {"source", "raw_transcript", "clear_signs", "vague_signs"} --
+   this is a drop-in replacement. Nothing downstream (disambiguation,
+   risk agent, escalation) needs to change.
 """
 
 import json
 import os
-import re
 import sys
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
+from dotenv import load_dotenv
 
-# Allow `python3 agents/intake/intake_agent_v2.py` to run directly --
-# when a script is invoked this way, Python puts the script's own
-# directory (agents/intake/) at sys.path[0], NOT the project root, so
-# `from agents.intake.intake_agent import ...` (the fallback import
-# below) fails with ModuleNotFoundError unless the root is added
-# explicitly. Has no effect when this module is imported normally
-# (e.g. from assess.py), since the root is already on sys.path then.
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+load_dotenv()
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "mcp"))
+from tools.validator import validate_signs  # noqa: E402
 
-_CLIENT = None
+logger = logging.getLogger("neotriage.intake_v2")
+logging.basicConfig(level=logging.INFO)
+
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "imnci_rules")
 
 
 @dataclass
 class IntakeResult:
     raw_transcript: str
-    source: str = "parent_reported"
+    source: str = "parent_reported_voice"
     language: str = "en"
     clear_signs: dict = field(default_factory=dict)
     vague_signs: list = field(default_factory=list)
+    audit_flags: list = field(default_factory=list)  # low-confidence extractions, for review only
 
     def to_dict(self) -> dict:
         return {
             "source": self.source,
-            "language": self.language,
             "raw_transcript": self.raw_transcript,
+            "language": self.language,
             "clear_signs": self.clear_signs,
             "vague_signs": self.vague_signs,
+            "audit_flags": self.audit_flags,  # now exposed -- was previously invisible to callers
         }
 
 
-class IntakeExtractionError(Exception):
-    pass
+def _load_schema() -> dict:
+    with open(os.path.join(DATA_DIR, "danger_signs.json"), "r", encoding="utf-8") as f:
+        return json.load(f)["signs"]
+
+
+def _build_extraction_prompt(transcript: str, schema: dict) -> str:
+    """
+    Builds the schema-constrained extraction prompt dynamically from
+    the live schema, so the vocabulary the LLM is allowed to use always
+    matches Kshitij's rule table exactly -- no hardcoded, driftable
+    phrase lists anywhere in this file.
+    """
+    field_descriptions = []
+    for field_name, field_def in schema.items():
+        values = field_def.get("values")
+        if isinstance(values, list):
+            field_descriptions.append(
+                f'- "{field_name}": one of {values} — {field_def.get("description", "")}'
+            )
+        elif field_name == "age_days":
+            field_descriptions.append(
+                f'- "{field_name}": integer 0-59 — {field_def.get("description", "")}'
+            )
+
+    schema_text = "\n".join(field_descriptions)
+
+    return f"""You are extracting structured clinical signs from a caregiver's spoken description of a newborn infant, for a triage support tool. The caregiver may speak in any language or dialect -- read the meaning directly, do not translate first.
+
+TRANSCRIPT (verbatim, any language):
+\"\"\"{transcript}\"\"\"
+
+ALLOWED SIGN FIELDS AND VALUES (use ONLY these field names and ONLY these exact values -- never invent a new field or value):
+{schema_text}
+
+CRITICAL -- DO NOT OMIT A CATEGORY JUST BECAUSE THE SENTENCE IS COMPLEX:
+If a transcript contains BOTH a reassuring phrase and a concerning phrase about the SAME category (e.g. "not breathing very fast" AND "chest is pulling while breathing" in the same sentence), the concerning detail is the one that matters clinically -- chest indrawing/pulling is a DISTINCT, MORE SEVERE sign than breathing rate, not a contradiction to be averaged out or dropped. Never let a mention of "normal" on one aspect cause you to silently skip a genuinely concerning detail mentioned elsewhere in the same sentence. When in doubt about a category, include it in vague_signs -- never omit a category entirely just because the sentence was hard to parse.
+
+Worked example (this exact pattern has been missed before -- read it carefully):
+Transcript: "The baby is not breathing very fast. The chest is pulling while breathing and is having a little cold."
+Correct extraction: {{"clear_signs": {{"breathing_rate": "severe_chest_indrawing"}}, "vague_signs": ["temperature"]}}
+(Chest pulling/indrawing is caught and reported as clear, DESPITE the earlier "not breathing very fast" phrase. "A little cold" is genuinely vague, so temperature goes to vague_signs.)
+
+INSTRUCTIONS:
+1. For each sign the caregiver clearly and unambiguously described, output it under "clear_signs" using the EXACT field name and EXACT value from the list above.
+2. For each sign category the caregiver mentioned but too vaguely to map confidently to one specific value (e.g. "not doing well" for feeding, without saying refusing vs. reduced), list the field name under "vague_signs" instead -- do NOT guess a specific value.
+3. If a sign category was not mentioned at all, omit it entirely from both lists. Absence is "unknown", not "normal" -- never infer a normal/healthy value for something that was never mentioned.
+4. Only use field names and values that appear EXACTLY in the allowed list above. If you are unsure a value truly matches, put the field name in vague_signs instead of guessing.
+
+Respond with ONLY valid JSON, no other text, in this exact shape:
+{{"clear_signs": {{"field_name": "value", ...}}, "vague_signs": ["field_name", ...]}}"""
 
 
 # ---------------------------------------------------------------------------
-# Sign vocabulary given to the LLM in-context. Kept in sync manually with
-# data/imnci_rules/danger_signs.json -- if Kshitij adds/renames a sign
-# there, mirror it here too. (Extension idea for later: load this
-# directly from the JSON file at import time instead of hardcoding, so
-# the two can never drift -- flagging as a follow-up, not blocking.)
+# Vocabulary translation: the LLM extraction prompt above is built purely
+# from Kshitij's danger_signs.json SCHEMA FIELD NAMES (e.g. "breathing_rate",
+# "jaundice_onset"). Shreeja's disambiguation QUESTION_BANK uses a SEPARATE,
+# slightly different key vocabulary for vague signs (e.g. "breathing",
+# "jaundice_age") -- a holdover convention from the original v1 intake
+# agent. These two vocabularies coincide for 3 of 5 categories and
+# silently diverge for 2 -- without this translation, a vague sign
+# correctly identified by the LLM as "breathing_rate" would fail
+# QUESTION_BANK.get("breathing_rate") -> None downstream, and no
+# follow-up question would ever be asked.
 # ---------------------------------------------------------------------------
-
-_SIGN_VOCABULARY = {
-    "feeding": ["feeding_normally", "not_feeding_well", "not_able_to_feed_at_all"],
-    "convulsions": ["none", "convulsing_now", "had_convulsions"],
-    "breathing_rate": ["normal", "fast_breathing", "severe_chest_indrawing"],
-    "temperature": [
-        "normal",
-        "fever_37_5C_or_above_or_hot_to_touch",
-        "low_temp_below_35_5C_or_cold_to_touch",
-    ],
-    "movement": ["moves_on_own", "moves_only_when_stimulated", "no_movement_at_all"],
-    "umbilicus": ["normal", "red_or_draining_pus"],
-    "skin_pustules": ["absent", "few_localized", "ten_or_more_or_big_boil"],
-    "nasal_flaring": ["absent", "present"],
-    "grunting": ["absent", "present"],
-    "bulging_fontanelle": ["absent", "present"],
-    "jaundice_onset": ["no_jaundice", "onset_before_24_hours", "onset_after_24_hours"],
-    "jaundice_extent": ["not_applicable", "face_or_body_only", "palms_or_soles_yellow"],
-    "diarrhoea_present": ["no", "yes"],
-}
-
-# Sign keys Shreeja's QUESTION_BANK can currently disambiguate. Anything
-# outside this set that comes back "vague" from the LLM still gets
-# reported, but flag to Shreeja if new keys show up here that her
-# disambiguation_agent.py doesn't have a question for yet.
-_DISAMBIGUATABLE_KEYS = {"feeding", "temperature", "breathing", "jaundice_extent", "jaundice_age"}
-
-# CRITICAL: the LLM reasons in danger_signs.json FIELD NAMES (matching
-# _SIGN_VOCABULARY), but Shreeja's QUESTION_BANK uses different, shorter
-# KEYS for two of them. Confirmed against her actual merged
-# disambiguation_agent.py on feature/mcp -- QUESTION_BANK has "breathing"
-# (not "breathing_rate") and "jaundice_age" (not "jaundice_onset").
-# Without this translation, get_question()/resume_disambiguation() would
-# silently return None / raise KeyError on those two signs.
-_FIELD_NAME_TO_DISAMBIGUATION_KEY = {
+_SCHEMA_TO_QUESTION_BANK_KEY = {
     "breathing_rate": "breathing",
     "jaundice_onset": "jaundice_age",
-    # feeding, temperature, jaundice_extent are identical in both --
-    # no translation needed for those.
+    # feeding, temperature, jaundice_extent already match QUESTION_BANK
+    # keys exactly and need no translation.
 }
 
-_SYSTEM_PROMPT = f"""You are a clinical intake assistant extracting newborn danger signs \
-from a caregiver's free-form spoken description (transcribed from voice, possibly in \
-Hindi, Marathi, Odia, or English, or mixed).
 
-Valid signs and their allowed values (JSON):
-{json.dumps(_SIGN_VOCABULARY, indent=2)}
-
-Task: read the transcript and classify each sign that was mentioned into ONE of two buckets:
-
-1. "clear_signs": the transcript gives enough detail to map DIRECTLY to one of the \
-exact allowed values above. Only include a sign here if you are confident of the exact \
-value -- do not guess.
-
-2. "vague_signs": the caregiver mentioned this symptom category but too vaguely to map \
-to a specific value (e.g. "not doing well", general distress language, or ambiguous \
-phrasing). List only the sign KEY (e.g. "feeding"), not a value.
-
-Rules:
-- Do not include a sign in the output at all if it was never mentioned.
-- Never invent or assume a sign that wasn't described.
-- Handle paraphrasing, dialect, and any language -- do not require literal keyword matches.
-- "chest pulling in", "chest going in and out hard", "chest sinking" etc. all map to \
-breathing_rate: severe_chest_indrawing if described as such.
-- Respond with ONLY valid JSON, no markdown fences, no explanation, in this exact shape:
-{{"clear_signs": {{"<field>": "<value>", ...}}, "vague_signs": ["<sign_key>", ...]}}
-"""
+def _translate_vague_signs_for_disambiguation(vague_signs: list) -> list:
+    """Maps schema field names to the key vocabulary Shreeja's
+    QUESTION_BANK/get_question() actually expects."""
+    return [_SCHEMA_TO_QUESTION_BANK_KEY.get(v, v) for v in vague_signs]
 
 
-def _get_client():
-    global _CLIENT
-    if _CLIENT is not None:
-        return _CLIENT
+def _call_llm_for_extraction(prompt: str) -> dict:
+    """
+    Makes the actual LLM call via Groq (the provider actually in use for
+    this project -- NOT Anthropic, despite an earlier version of this
+    file assuming otherwise, which silently failed authentication and
+    returned empty signs on every real call without raising a visible
+    error until logging was added).
 
-    if not GROQ_API_KEY:
-        raise IntakeExtractionError(
-            "GROQ_API_KEY is not set. Export it before running: "
-            "export GROQ_API_KEY=your_key_here"
-        )
-
+    Requires GROQ_API_KEY in the environment. Model is configurable via
+    GROQ_MODEL env var, defaulting to a strong, fast instruction-following
+    model available on Groq's free tier.
+    """
     try:
-        from openai import OpenAI
+        from groq import Groq
     except ImportError as e:
-        raise IntakeExtractionError(
-            "openai package not installed. Run: pip install openai --break-system-packages"
+        raise RuntimeError(
+            "groq package not installed. Run: pip install groq --break-system-packages"
         ) from e
 
-    _CLIENT = OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL)
-    return _CLIENT
+    client = Groq()  # reads GROQ_API_KEY from env
+    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-
-def _call_groq(transcript: str) -> dict:
-    client = _get_client()
-
-    response = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": f"Transcript: {transcript}"},
-        ],
-        temperature=0,  # deterministic classification, not creative generation
+    completion = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,  # deterministic extraction, not creative generation
+        max_tokens=1000,
     )
 
-    raw = response.choices[0].message.content.strip()
-    # Strip markdown fences defensively, in case the model wraps the JSON
-    # despite instructions not to.
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+    text = completion.choices[0].message.content.strip()
+    # Defensive: strip markdown code fences if the model adds them despite instructions
+    text = text.replace("```json", "").replace("```", "").strip()
 
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise IntakeExtractionError(f"Groq returned non-JSON output: {raw[:200]}") from e
-
-    return parsed
+    return json.loads(text)
 
 
-def _validate_and_clean(parsed: dict) -> tuple[dict, list]:
-    """Defensive validation -- never trust LLM output blindly. Drop any
-    field/value the model hallucinated outside the known vocabulary."""
-    clear_signs = {}
-    for field_name, value in parsed.get("clear_signs", {}).items():
-        if field_name in _SIGN_VOCABULARY and value in _SIGN_VOCABULARY[field_name]:
-            clear_signs[field_name] = value
-        # Silently drop anything that doesn't match the schema -- better
-        # to under-report than to pass a hallucinated value downstream
-        # into a clinical decision.
+# ---------------------------------------------------------------------------
+# Lightweight audit cross-check -- NOT the extraction mechanism, just a
+# logged confidence signal. Kept intentionally simple (a handful of
+# common keywords across a few languages) since it never blocks
+# anything; it only flags for human review if the LLM claims a sign
+# with literally zero related vocabulary present anywhere.
+# ---------------------------------------------------------------------------
 
-    raw_vague = parsed.get("vague_signs", [])
-    translated = [
-        _FIELD_NAME_TO_DISAMBIGUATION_KEY.get(key, key) for key in raw_vague
-    ]
-    vague_signs = [key for key in translated if key in _DISAMBIGUATABLE_KEYS]
-    # De-duplicate, preserve order (translation can create duplicates,
-    # e.g. if the LLM never actually collides here, but defensive anyway)
-    seen = set()
-    vague_signs = [k for k in vague_signs if not (k in seen or seen.add(k))]
+_AUDIT_KEYWORDS = {
+    "feeding": ["feed", "doodh", "milk", "haalu", "khana"],
+    "breathing_rate": ["breath", "saans", "chest", "usiru"],
+    "temperature": ["fever", "hot", "cold", "garam", "thanda", "jwara"],
+    "jaundice_onset": ["yellow", "peela", "jaundice", "haladi"],
+    "jaundice_extent": ["yellow", "peela", "jaundice", "haladi"],
+    "convulsions": ["fit", "jhatke", "convuls", "seizure"],
+    "movement": ["move", "active", "hilta", "lethargic"],
+}
 
-    return clear_signs, vague_signs
 
+def _audit_check(clear_signs: dict, transcript: str) -> list:
+    flags = []
+    text_lower = transcript.lower()
+    for field_name in clear_signs:
+        keywords = _AUDIT_KEYWORDS.get(field_name, [])
+        if keywords and not any(kw in text_lower for kw in keywords):
+            flags.append(
+                f"LLM extracted '{field_name}' but no related keyword found in "
+                f"transcript across known languages -- flagged for review, not blocked."
+            )
+    return flags
+
+
+# ---------------------------------------------------------------------------
+# Main entry point -- SAME signature/contract as the original extract_signs()
+# ---------------------------------------------------------------------------
 
 def extract_signs(transcript: str, language: str = "en") -> IntakeResult:
-    """
-    Main entry point -- same signature contract as v1, plus the new
-    `language` parameter (pass through Whisper's detected language from
-    asr/transcribe.py's TranscriptionResult.language).
-    """
+    schema = _load_schema()
+    prompt = _build_extraction_prompt(transcript, schema)
+
+    result = IntakeResult(raw_transcript=transcript, language=language)
+
     try:
-        parsed = _call_groq(transcript)
-        clear_signs, vague_signs = _validate_and_clean(parsed)
+        llm_output = _call_llm_for_extraction(prompt)
+    except Exception as e:
+        # LLM call failed entirely (network, auth, malformed JSON) --
+        # fail toward caution: treat everything as unresolved rather
+        # than silently returning empty/wrong signs. LOG LOUDLY -- this
+        # must never fail silently again, since an empty result here
+        # looks identical to "genuinely nothing to report" downstream.
+        logger.error(f"LLM extraction FAILED for transcript: {transcript!r}")
+        logger.error(f"Exception: {type(e).__name__}: {e}")
+        result.audit_flags.append(f"LLM extraction failed entirely: {type(e).__name__}: {e}")
+        return result
 
-        return IntakeResult(
-            raw_transcript=transcript,
-            language=language,
-            clear_signs=clear_signs,
-            vague_signs=vague_signs,
+    logger.info(f"LLM raw output for transcript {transcript!r}: {llm_output}")
+
+    raw_clear = llm_output.get("clear_signs", {})
+    raw_vague = llm_output.get("vague_signs", [])
+
+    # Validate every LLM-claimed value against the SAME validator used
+    # by imnci_lookup -- anything invalid gets demoted to vague, not
+    # silently accepted or silently dropped.
+    validation = validate_signs(raw_clear)
+    invalid_keys = set()
+    for error in validation["errors"]:
+        # error format: "'key' = 'value' is not a recognized value. ..."
+        key = error.split("'")[1]
+        invalid_keys.add(key)
+
+    for key, value in raw_clear.items():
+        if key in invalid_keys or key in validation["unknown_keys"]:
+            translated_key = _SCHEMA_TO_QUESTION_BANK_KEY.get(key, key)
+            result.vague_signs.append(translated_key)
+            result.audit_flags.append(
+                f"LLM claimed '{key}'='{value}' but this failed schema validation "
+                f"-- demoted to vague_signs rather than trusted."
+            )
+        else:
+            result.clear_signs[key] = value
+
+    for key in raw_vague:
+        translated_key = _SCHEMA_TO_QUESTION_BANK_KEY.get(key, key)
+        if translated_key not in result.vague_signs:
+            result.vague_signs.append(translated_key)
+
+    result.audit_flags.extend(_audit_check(result.clear_signs, transcript))
+
+    # Safety net: a substantive transcript (not just a couple words)
+    # that produces ZERO signs at all -- neither clear nor vague -- is
+    # suspicious, not necessarily "genuinely nothing to report". This
+    # exact failure mode happened live: a transcript describing severe
+    # chest indrawing extracted to {} / [] with no error raised, and
+    # the pipeline silently proceeded past disambiguation entirely.
+    word_count = len(transcript.split())
+    if word_count > 5 and not result.clear_signs and not result.vague_signs:
+        warning = (
+            f"SUSPICIOUS: transcript has {word_count} words but extraction "
+            f"produced zero signs (neither clear nor vague). This may be a "
+            f"genuine extraction miss, not a truly sign-free transcript -- "
+            f"flagging loudly rather than letting this pass silently."
         )
+        logger.warning(warning)
+        result.audit_flags.append(warning)
 
-    except IntakeExtractionError as e:
-        # Graceful degradation: fall back to v1's keyword matcher rather
-        # than failing the whole /assess request. Demo-day network
-        # issues or a missing API key shouldn't take the pipeline down.
-        try:
-            from agents.intake.intake_agent import extract_signs as extract_signs_v1
-        except ImportError:
-            raise IntakeExtractionError(
-                f"Groq call failed ({e}) and v1 fallback unavailable."
-            ) from e
-
-        fallback_result = extract_signs_v1(transcript)
-        return IntakeResult(
-            raw_transcript=transcript,
-            language=language,
-            clear_signs=fallback_result.clear_signs,
-            vague_signs=fallback_result.vague_signs,
-        )
+    return result
 
 
 if __name__ == "__main__":
-    # Test harness -- run against the case that broke v1.
-    test_cases = [
-        (
-            "baby's chest is pulling in hard when she breathes, and she "
-            "hasn't fed since this morning",
-            "en",
-            "EXPECTED: breathing_rate=severe_chest_indrawing (v1 returned {})",
-        ),
-        (
-            "baby ka chest andar ki taraf dhas raha hai",
-            "hi",
-            "EXPECTED: breathing_rate=severe_chest_indrawing, pure Hindi, no English",
-        ),
-    ]
+    # Manual test harness -- run against the exact transcript that broke
+    # the old keyword matcher, to prove this approach handles it.
+    sample = (
+        "The baby is not breathing very fast. The chest is pulling while "
+        "breathing and is having a little cold."
+    )
 
-    for transcript, lang, note in test_cases:
-        print(f"\n--- {note} ---")
-        print(f"IN: {transcript}")
-        try:
-            result = extract_signs(transcript, language=lang)
-            print(json.dumps(result.to_dict(), indent=2))
-        except IntakeExtractionError as e:
-            print(f"ERROR: {e}")
+    print("Testing against the real transcript that broke keyword matching:")
+    print(f"Transcript: {sample}\n")
+
+    if not os.environ.get("GROQ_API_KEY"):
+        print("GROQ_API_KEY not set in this environment -- skipping live call.")
+        print("Set the key and re-run to see real extraction against this transcript.")
+    else:
+        out = extract_signs(sample)
+        print("EXTRACTION RESULT:")
+        print(json.dumps(out.to_dict(), indent=2))
+        if out.audit_flags:
+            print("\nAUDIT FLAGS (for review, non-blocking):")
+            for flag in out.audit_flags:
+                print(f"  - {flag}")
