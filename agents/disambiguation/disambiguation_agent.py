@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+import re
 
 
 class Vagueness(str, Enum):
@@ -15,6 +16,18 @@ SAFE_FALLBACK_MESSAGE = (
     "I'm not fully sure yet. To be safe, please get the baby checked by "
     "your ASHA worker or the nearest health facility today."
 )
+
+_NEGATION_WORDS = re.compile(r"\b(not|no|n't|isn't|doesn't|wasn't|never|without)\b")
+_NEGATION_LOOKBACK_CHARS = 20
+
+
+def _is_negated(text: str, keyword: str) -> bool:
+    idx = text.find(keyword)
+    if idx == -1:
+        return False
+    window_start = max(0, idx - _NEGATION_LOOKBACK_CHARS)
+    window = text[window_start:idx]
+    return bool(_NEGATION_WORDS.search(window))
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +116,48 @@ QUESTION_BANK = {
         "answer_map": {},  # parsed numerically, not by keyword — see below
         "target_field": "jaundice_onset",
     },
+    "movement": {
+        "question": (
+            "Is the baby moving normally on their own — arms, legs, "
+            "turning the head — or does the baby only move when you "
+            "touch or shake them gently, or not move at all?"
+        ),
+        "answer_map": {
+            "only when": "moves_only_when_stimulated",
+            "touch": "moves_only_when_stimulated",
+            "shake": "moves_only_when_stimulated",
+            "not move": "no_movement_at_all",
+            "not moving": "no_movement_at_all",
+            "limp": "no_movement_at_all",
+            "normal": "moves_on_own",
+            "fine": "moves_on_own",
+            "active": "moves_on_own",
+        },
+        "target_field": "movement",
+    },
+    "hydration_signs": {
+        "question": (
+            "Does the baby seem unusually restless or irritable, do the "
+            "eyes look sunken in, or if you gently pinch the skin on the "
+            "belly does it stay pinched for a moment before going back?"
+        ),
+        "answer_map": {
+            "restless": "restless_or_irritable",
+            "irritable": "irritable_or_restless",
+            "sunken": "sunken_eyes",
+            "slow": "skin_pinch_goes_back_slowly",
+            "stays": "skin_pinch_goes_back_slowly",
+            "very slow": "skin_pinch_goes_back_very_slowly",
+            "normal": "none",
+            "fine": "none",
+        },
+        "target_field": "hydration_signs",
+    },
 }
+_GENERIC_FALLBACK_TEMPLATE = (
+    "Can you tell me a bit more about the baby's {sign_key}? "
+    "Anything you've noticed, even if you're not sure it matters."
+)
 
 
 @dataclass
@@ -125,9 +179,15 @@ class DisambiguationAgent:
     def __init__(self, language: str = "en"):
         self.language = language
 
-    def get_question(self, sign_key: str) -> Optional[str]:
+    def get_question(self, sign_key: str) -> str:
+        """Guaranteed to never return None -- falls back to a generic
+        prompt for any sign_key without a dedicated QUESTION_BANK entry,
+        so a conversation can never go silent mid-flow regardless of
+        what vague-sign vocabulary the intake agent produces."""
         entry = QUESTION_BANK.get(sign_key)
-        return entry["question"] if entry else None
+        if entry:
+            return entry["question"]
+        return _GENERIC_FALLBACK_TEMPLATE.format(sign_key=sign_key.replace("_", " "))
 
     def interpret_answer(self, sign_key: str, answer_text: str) -> Optional[str]:
         """Very simple keyword matcher for the PoC. In production this
@@ -143,7 +203,7 @@ class DisambiguationAgent:
             return self._parse_age_answer(answer_text)
 
         for keyword, value in entry["answer_map"].items():
-            if keyword in answer_lower:
+            if keyword in answer_lower and not _is_negated(answer_lower, keyword):
                 return value
         return None
 
@@ -267,65 +327,3 @@ class DisambiguationAgent:
         output["raw_transcript"] = intake_output.get("raw_transcript")
         output["language"] = intake_output.get("language", "en")
         return output
-
-# ---------------------------------------------------------------------------
-# Manual test harness — run this file directly to try it with text input
-# before wiring in real ASR/voice. Mirrors Step 3 of the build plan:
-# "Test with text input first."
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    agent = DisambiguationAgent(language="en")
-
-    # Simulated case: Kannada jaundice example from the pitch doc, but
-    # with age pushed to 16 days to test the fixed severe-jaundice path.
-    scripted_answers = {
-        QUESTION_BANK["jaundice_extent"]["question"]: "Only on the face",
-        QUESTION_BANK["jaundice_age"]["question"]: "baby is 16 days old, noticed the yellow about 6 days ago",
-    }
-
-    def mock_get_answer(question: str) -> str:
-        print(f"AGENT ASKS: {question}")
-        answer = scripted_answers.get(question, "not sure")
-        print(f"PARENT ANSWERS: {answer}\n")
-        return answer
-
-    vague_signs = ["jaundice_extent", "jaundice_age"]
-    merged = agent.resolve_all(vague_signs, mock_get_answer)
-    output = agent.build_output(merged)
-
-    import json
-    print("STRUCTURED OUTPUT FOR RISK COMBINATION AGENT:")
-    print(json.dumps(output, indent=2))
-
-    print("\n" + "=" * 70)
-    print("TEST 2 -- full process_intake() using the real Intake Agent output shape")
-    print("=" * 70)
-
-    # Matches agents/intake/intake_agent.py's sample transcript output exactly:
-    # "baby has not been feeding since morning, not feeding well, and
-    # also has fever" -> clear_signs empty, vague_signs=["feeding","temperature"]
-    intake_output_sample = {
-        "source": "parent_reported_voice",
-        "raw_transcript": (
-            "baby has not been feeding since morning, not feeding well, "
-            "and also has fever"
-        ),
-        "clear_signs": {"movement": "moves_on_own"},  # e.g. he also caught this clearly
-        "vague_signs": ["feeding", "temperature"],
-    }
-
-    scripted_answers_2 = {
-        QUESTION_BANK["feeding"]["question"]: "not feeding at all, refusing completely",
-        QUESTION_BANK["temperature"]["question"]: "feels very warm and sweaty",
-    }
-
-    def mock_get_answer_2(question: str) -> str:
-        print(f"AGENT ASKS: {question}")
-        answer = scripted_answers_2.get(question, "not sure")
-        print(f"PARENT ANSWERS: {answer}\n")
-        return answer
-
-    final_output = agent.process_intake(intake_output_sample, mock_get_answer_2)
-    print("FINAL MERGED OUTPUT (clear_signs + disambiguated signs):")
-    print(json.dumps(final_output, indent=2))
