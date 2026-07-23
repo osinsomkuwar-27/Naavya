@@ -1,7 +1,0 @@
-# db/ layer dependencies — install by ALL teammates
-# pip install -r requirements-db.txt
-
-motor>=3.3           # async MongoDB driver (Motor wraps PyMongo)
-pymongo>=4.6         # Motor dependency; also used directly for PyMongoError
-python-dotenv>=1.0   # loads backend/api/.env into os.environ
-pydantic>=2.0        # Pydantic v2 models in db/models.py
