@@ -121,8 +121,30 @@ function ResultPage() {
             </Button>
           </div>
 
+          <section className="mt-8 border-t border-border pt-6">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Was this assessment helpful?
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Your feedback helps improve Naavya's triage guidance for mothers and health workers.
+            </p>
+            <div className="mt-3 flex items-center gap-3">
+              {["Very helpful", "Somewhat helpful", "Not helpful"].map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => toast.success("Thank you for your feedback!")}
+                  className="rounded-full border border-border bg-background px-3.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-primary-soft hover:text-primary hover:border-primary/40"
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+          </section>
+
           {!user && (
             <div className="mt-8 flex items-start justify-between gap-4 rounded-2xl bg-primary-soft/60 p-4">
+
               <div className="text-sm">
                 <p className="font-medium text-foreground">Save this to your history</p>
                 <p className="text-muted-foreground">

@@ -23,18 +23,20 @@ function ProcessingPage() {
   const navigate = useNavigate();
   const [i, setI] = useState(0);
   const [failed, setFailed] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!draft) return;
     const t1 = window.setInterval(() => setI((v) => (v + 1) % STEPS.length), 1400);
-    const t2 = window.setTimeout(() => {
+    const t2 = window.setTimeout(async () => {
       try {
-        finalize();
+        await finalize();
         navigate({ to: "/assessment/result" });
-      } catch {
+      } catch (err) {
         setFailed(true);
+        setErrorMsg(err instanceof Error ? err.message : "Assessment could not be finalized.");
       }
-    }, 3600);
+    }, 2000);
     return () => {
       window.clearInterval(t1);
       window.clearTimeout(t2);
@@ -48,14 +50,14 @@ function ProcessingPage() {
         {failed ? (
           <>
             <h1 className="font-display text-2xl font-semibold text-foreground">
-              Something went wrong
+              Assessment Failed
             </h1>
-            <p className="mt-2 text-muted-foreground">
-              Let's try that again. Your conversation is safe.
+            <p className="mt-2 text-sm text-danger font-mono bg-danger-soft/50 p-3 rounded-xl border border-danger/20">
+              {errorMsg || "Unable to retrieve clinical classification from backend."}
             </p>
             <div className="mt-6 flex flex-wrap justify-center gap-2">
-              <Button onClick={() => window.location.reload()} className="h-12 rounded-full">
-                Retry
+              <Button asChild className="h-12 rounded-full">
+                <Link to="/assessment/chat">Return to chat</Link>
               </Button>
               <Button asChild variant="outline" className="h-12 rounded-full">
                 <Link to="/assessment">Start new assessment</Link>

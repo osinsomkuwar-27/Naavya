@@ -68,6 +68,7 @@ export interface AssessRequest {
   transcript: string;
   conversation_id?: string;
   language?: string;
+  source?: string;
 }
 
 export interface AssessResponse {
@@ -80,6 +81,7 @@ export interface AssessResponse {
   clear_signs: Record<string, string>;
   vague_signs: string[];
   audit_flags: string[];
+  source?: string;
 }
 
 export async function submitAssessment(
@@ -89,6 +91,42 @@ export async function submitAssessment(
     method: "POST",
     body: JSON.stringify(req),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Endpoint: POST /assess/voice
+// ---------------------------------------------------------------------------
+
+export async function submitVoiceAssessment(
+  audioBlob: Blob,
+  conversationId?: string,
+  language = "en",
+  source = "web_mic",
+): Promise<AssessResponse> {
+  const formData = new FormData();
+  formData.append("audio", audioBlob, "recording.ogg");
+  if (conversationId) formData.append("conversation_id", conversationId);
+  formData.append("language", language);
+  formData.append("source", source);
+
+  const url = `${API_BASE}/assess/voice`;
+  const res = await fetch(url, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      /* ignore parse error */
+    }
+    throw new Error(detail);
+  }
+
+  return res.json() as Promise<AssessResponse>;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,3 +146,4 @@ export function mapRiskLevel(
       return "low";
   }
 }
+

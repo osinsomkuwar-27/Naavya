@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Mic, X, Check, RefreshCw, MessageSquare } from "lucide-react";
+import { Mic, X, Check, RefreshCw, MessageSquare, Loader2 } from "lucide-react";
 import { SiteNav } from "@/components/site-nav";
 import { Button } from "@/components/ui/button";
 import { useAssessment } from "@/lib/assessment-context";
@@ -14,16 +14,15 @@ export const Route = createFileRoute("/assessment/voice")({
 
 type State = "idle" | "listening" | "captured" | "uploading" | "blocked";
 
-const SAMPLE_TRANSCRIPT =
-  "My baby is 12 days old and has had a mild fever since yesterday. She's feeding but a little less than usual, and she's a bit fussy.";
-
-function VoicePage() {
+export function VoicePage() {
   const [state, setState] = useState<State>("idle");
   const [seconds, setSeconds] = useState(0);
-  const [transcript, setTranscript] = useState(SAMPLE_TRANSCRIPT);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const timerRef = useRef<number | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const navigate = useNavigate();
-  const { startDraft } = useAssessment();
+  const { startVoiceDraft, finalize } = useAssessment();
 
   useEffect(() => {
     if (state === "listening") {
@@ -34,21 +33,64 @@ function VoicePage() {
     }
   }, [state]);
 
-  const toggle = () => {
-    if (state === "idle") {
+  const startRecording = async () => {
+    try {
+      audioChunksRef.current = [];
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: "audio/ogg; codecs=opus" });
+        setAudioBlob(blob);
+        stream.getTracks().forEach((track) => track.stop());
+      };
+
+      mediaRecorder.start();
       setSeconds(0);
       setState("listening");
-    } else if (state === "listening") {
+    } catch (err) {
+      console.warn("Microphone access failed:", err);
+      setState("blocked");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && state === "listening") {
+      mediaRecorderRef.current.stop();
       setState("captured");
     }
   };
 
-  const done = () => {
+  const toggle = () => {
+    if (state === "idle") {
+      startRecording();
+    } else if (state === "listening") {
+      stopRecording();
+    }
+  };
+
+  const done = async () => {
+    if (!audioBlob) return;
     setState("uploading");
-    setTimeout(() => {
-      startDraft("voice", transcript);
+    try {
+      const { isDone } = await startVoiceDraft(audioBlob);
+      if (isDone) {
+        await finalize();
+        navigate({ to: "/assessment/result" });
+      } else {
+        navigate({ to: "/assessment/chat" });
+      }
+    } catch (err) {
+      console.warn("Voice upload error:", err);
       navigate({ to: "/assessment/chat" });
-    }, 700);
+    }
   };
 
   return (
@@ -59,22 +101,22 @@ function VoicePage() {
         <div className="mb-2 text-sm font-medium uppercase tracking-wide text-muted-foreground">
           {state === "idle" && "Ready when you are"}
           {state === "listening" && "Listening…"}
-          {state === "captured" && "Review your recording"}
-          {state === "uploading" && "One moment…"}
+          {state === "captured" && "Recording complete"}
+          {state === "uploading" && "Transcribing audio via ASR…"}
           {state === "blocked" && "Microphone not available"}
         </div>
 
         <h1 className="mb-10 max-w-md font-display text-2xl font-semibold text-foreground md:text-3xl">
           {state === "idle" && "Tap to describe what's happening with your baby."}
           {state === "listening" && "Speak in your own words — take your time."}
-          {state === "captured" && "Does this sound right?"}
-          {state === "uploading" && "Sending your recording…"}
+          {state === "captured" && "Ready to send your voice note?"}
+          {state === "uploading" && "Processing your recording with Naavya backend…"}
           {state === "blocked" && "We couldn't access your microphone."}
         </h1>
 
         {state !== "blocked" && (
           <div className="relative flex h-64 w-64 items-center justify-center">
-            {state === "listening" && (
+            {(state === "listening" || state === "uploading") && (
               <>
                 <span className="nt-pulse-ring absolute inset-0 rounded-full bg-primary/30" />
                 <span
@@ -91,13 +133,23 @@ function VoicePage() {
               className={`relative z-10 flex h-40 w-40 items-center justify-center rounded-full transition ${
                 state === "listening"
                   ? "bg-danger text-danger-foreground shadow-[0_20px_60px_-15px_rgba(211,47,47,0.55)]"
+                  : state === "uploading"
+                  ? "bg-primary/90 text-primary-foreground shadow-[var(--shadow-lift)]"
                   : "bg-primary text-primary-foreground shadow-[var(--shadow-lift)] hover:scale-[1.02]"
               }`}
             >
-              <Mic className="h-14 w-14" strokeWidth={1.6} />
+              {state === "uploading" ? (
+                <div className="flex flex-col items-center gap-2">
+                  <Loader2 className="h-12 w-12 animate-spin text-primary-foreground" />
+                  <span className="text-xs font-medium tracking-wide">Transcribing...</span>
+                </div>
+              ) : (
+                <Mic className="h-14 w-14" strokeWidth={1.6} />
+              )}
             </button>
           </div>
         )}
+
 
         {state === "blocked" && (
           <div className="w-full max-w-md rounded-3xl border border-warning/40 bg-warning-soft p-6 text-left">
@@ -149,25 +201,19 @@ function VoicePage() {
 
         {state === "captured" && (
           <div className="mt-8 w-full max-w-md space-y-4">
-            <div className="rounded-3xl border border-border bg-surface p-5 text-left text-sm text-foreground">
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                What we heard
-              </p>
-              <p className="italic text-foreground/90">"{transcript}"</p>
-            </div>
             <div className="flex flex-wrap gap-3">
               <Button
                 onClick={done}
                 className="h-12 flex-1 rounded-full text-base"
               >
-                <Check className="mr-2 h-5 w-5" /> Sounds right
+                <Check className="mr-2 h-5 w-5" /> Send audio
               </Button>
               <Button
                 variant="outline"
                 onClick={() => {
                   setState("idle");
                   setSeconds(0);
-                  setTranscript(SAMPLE_TRANSCRIPT);
+                  setAudioBlob(null);
                 }}
                 className="h-12 rounded-full"
               >
@@ -175,16 +221,6 @@ function VoicePage() {
               </Button>
             </div>
           </div>
-        )}
-
-        {state === "idle" && (
-          <button
-            type="button"
-            onClick={() => setState("blocked")}
-            className="mt-2 text-xs text-muted-foreground/60 hover:text-muted-foreground"
-          >
-            (Simulate mic blocked)
-          </button>
         )}
       </main>
 

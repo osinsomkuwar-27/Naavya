@@ -13,7 +13,7 @@ export const Route = createFileRoute("/assessment/chat")({
 });
 
 function ChatPage() {
-  const { draft, startDraft, appendUser } = useAssessment();
+  const { draft, startDraft, appendUser, finalize } = useAssessment();
   const navigate = useNavigate();
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
@@ -31,9 +31,17 @@ function ChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [draft?.messages.length, typing]);
 
+   useEffect(() => {
+    if (draft?.isClassified && phase !== "finishing") {
+      setPhase("finishing");
+      const t = setTimeout(() => navigate({ to: "/assessment/processing" }), 800);
+      return () => clearTimeout(t);
+    }
+  }, [draft?.isClassified, navigate]);
+
   const messages: ChatMessage[] = draft?.messages ?? [];
 
-  const send = (text: string) => {
+  const send = async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     setInput("");
@@ -42,14 +50,17 @@ function ChatPage() {
       return;
     }
     setTyping(true);
-    setTimeout(() => {
-      const { done } = appendUser(trimmed);
-      setTyping(false);
-      if (done) {
-        setPhase("finishing");
-        setTimeout(() => navigate({ to: "/assessment/processing" }), 800);
+    const { done } = await appendUser(trimmed);
+    setTyping(false);
+    if (done) {
+      setPhase("finishing");
+      try {
+        await finalize();
+        setTimeout(() => navigate({ to: "/assessment/result" }), 600);
+      } catch (err) {
+        console.error("Failed to finalize chat assessment:", err);
       }
-    }, 700);
+    }
   };
 
   const lastBot = [...messages].reverse().find((m) => m.role === "bot");
