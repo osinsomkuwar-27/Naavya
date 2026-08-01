@@ -65,7 +65,7 @@ class EscalationAgent:
     def __init__(self, language: str = "en"):
         self.language = language
 
-    def build_reply(self, risk_output: dict) -> str:
+    def build_reply(self, risk_output: dict, signs: dict = None) -> str:
         """
         risk_output is expected to come from the Risk Combination Agent,
         shaped roughly like one matched rule from combination_rules.json:
@@ -74,13 +74,56 @@ class EscalationAgent:
           "urgency": "refer_now",
           "action_summary": "...",
         }
+
+        signs: the resolved clear_signs dict (feeding, breathing_rate,
+        temperature, etc). Optional for backward compatibility, but
+        should always be passed -- without it, two clinically different
+        cases that happen to match the same rule category (e.g.
+        "not feeding at all" vs "reduced feeding") produce IDENTICAL
+        reply text, which is a real trust/safety weakness in a sensitive
+        domain: the caregiver never learns WHY they're being told to
+        act, only the broad category. Confirmed live: two different
+        real test cases both returned byte-identical recommendation
+        text before this fix.
         """
         urgency = risk_output["urgency"]
         template = TEMPLATES.get(urgency, SAFE_FALLBACK_TEMPLATE)
-        return template.format(
+        reply = template.format(
             classification=risk_output.get("classification", "this condition").replace("_", " "),
             action_summary=risk_output.get("action_summary", ""),
         )
+
+        if signs:
+            signs_summary = self._describe_signs(signs)
+            if signs_summary:
+                reply += f" Based on what you told us: {signs_summary}."
+
+        return reply
+
+    _SIGN_DESCRIPTIONS = {
+        "not_able_to_feed_at_all": "the baby is not able to feed at all",
+        "not_feeding_well": "the baby is feeding less than usual",
+        "fast_breathing": "fast breathing",
+        "severe_chest_indrawing": "the chest pulling in while breathing",
+        "fever_37_5C_or_above_or_hot_to_touch": "a fever or feeling unusually hot",
+        "low_temp_below_35_5C_or_cold_to_touch": "feeling unusually cold",
+        "convulsing_now": "the baby is having convulsions",
+        "no_movement_at_all": "the baby is not moving",
+        "moves_only_when_stimulated": "the baby only moves when touched",
+        "palms_or_soles_yellow": "yellowing spread to the palms or soles",
+        "ten_or_more_or_big_boil": "multiple skin pustules or a large boil",
+    }
+
+    def _describe_signs(self, signs: dict) -> str:
+        """Turns the raw resolved signs dict into a short, plain-language
+        list of what was actually reported -- the caregiver should see
+        their own words reflected back, not just a broad category."""
+        descriptions = []
+        for value in signs.values():
+            desc = self._SIGN_DESCRIPTIONS.get(value)
+            if desc:
+                descriptions.append(desc)
+        return ", ".join(descriptions)
 
     def maybe_alert_asha(self, risk_output: dict, signs: dict, household_id: str, source: str):
         """Only refer_now cases page the ASHA worker — keeps her load
@@ -162,7 +205,7 @@ class EscalationAgent:
                 follow_up_date=None,
             )
 
-        reply_text = self.build_reply(risk_output)
+        reply_text = self.build_reply(risk_output, signs=signs)
         asha_alert_sent, asha_alert_text = self.maybe_alert_asha(
             risk_output, signs, household_id, source
         )
@@ -180,13 +223,6 @@ class EscalationAgent:
             log_entry=log_entry,
             follow_up_date=follow_up_date,
         )
-
-
-# ---------------------------------------------------------------------------
-# Manual test harness — three scenarios matching the ones already in the
-# pitch doc: refer_now (Bihar), reassure (Karnataka jaundice), and the
-# safe-fallback guardrail case.
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import json
@@ -236,3 +272,19 @@ if __name__ == "__main__":
     }
     result_3 = agent.handle({}, disambig_output_3, household_id="HH-3099")
     print(json.dumps(result_3.__dict__, indent=2))
+
+    print("\n" + "=" * 70)
+    print("CASE 4 — sign-specificity regression test (same category, different signs)")
+    print("=" * 70)
+    disambig_output_4 = {
+        "source": "parent_reported_voice",
+        "signs": {"feeding": "not_feeding_well"},  
+        "safe_fallback_message": None,
+    }
+    result_4 = agent.handle(risk_output_1, disambig_output_4, household_id="HH-4055")
+    print(json.dumps(result_4.__dict__, indent=2))
+    assert result_1.reply_text != result_4.reply_text, (
+        "Case 1 and Case 4 hit the same rule category but different signs -- "
+        "reply text must differ, or the sign-specificity fix has regressed"
+    )
+    print("\nPASSED: Case 1 and Case 4 (same category, different signs) produce distinct replies")
