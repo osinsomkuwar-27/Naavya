@@ -26,8 +26,11 @@ import uuid
 from enum import Enum
 from typing import Optional
 
+from pathlib import Path
+
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path so sibling packages resolve correctly
@@ -48,6 +51,8 @@ MAX_DISAMBIGUATION_ROUNDS = 3
 # ---------------------------------------------------------------------------
 router = APIRouter()
 
+# Singleton TTSService instance -- see _get_tts_service() below.
+_TTS_SERVICE = None
 
 # ---------------------------------------------------------------------------
 # Input source enum
@@ -95,6 +100,8 @@ class AssessResponse(BaseModel):
     vague_signs: list[str] = []
     audit_flags: list[str] = []
     source: Optional[str] = None
+    transcript: Optional[str] = None   # the transcript this response was generated from
+    audio_url: Optional[str] = None    # TTS audio for pending_question or recommendation, if synthesis succeeded
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +194,75 @@ def _get_session_store():
         DisambiguationSession, get_session, update_session, delete_session,
     )
     return DisambiguationSession, get_session, update_session, delete_session
+
+def _get_tts_service():
+    """
+    Lazily construct a singleton TTSService, reusing the exact backend
+    classes already defined in tts/synthesize.py (CartesiaBackend /
+    GTTSBackend) -- no TTS logic is duplicated here, only the one-time
+    "which backend, and where does its output/cache live" wiring
+    decision, following the same _get_intake() / _get_escalation_agent()
+    lazy-import convention already used throughout this file.
+
+    Cached at module level (not rebuilt per-request) so TTSService's own
+    internal _cache dict -- keyed by sha256(language:text) -- actually
+    persists across requests instead of being thrown away every call.
+    """
+    global _TTS_SERVICE
+    if _TTS_SERVICE is not None:
+        return _TTS_SERVICE
+
+    from tts.synthesize import TTSService, CartesiaBackend, GTTSBackend
+
+    cartesia_key = os.environ.get("CARTESIA_API_KEY")
+    cartesia_voice = os.environ.get("CARTESIA_VOICE_ID")
+
+    if cartesia_key and cartesia_voice:
+        backend = CartesiaBackend(api_key=cartesia_key, voice_id=cartesia_voice)
+    else:
+        backend = GTTSBackend()
+
+    # Same directory main.py mounts at /audio -- both computed from
+    # _PROJECT_ROOT, which this file already defines above.
+    output_dir = os.path.join(_PROJECT_ROOT, "tts_output")
+    _TTS_SERVICE = TTSService(backend=backend, output_dir=output_dir)
+    return _TTS_SERVICE
+
+
+async def _synthesize_and_get_url(text: Optional[str], language: str, conv_id: str) -> Optional[str]:
+    """
+    Synthesizes `text` to speech and returns a URL under /audio/ that
+    main.py's static mount serves, or None if there is no text to speak
+    or synthesis failed for any reason.
+
+    Runs the actual synthesis call in a threadpool because every real
+    TTSBackend in tts/synthesize.py is blocking: CartesiaBackend makes a
+    synchronous requests.post, GTTSBackend makes a blocking network call
+    via gTTS, and EspeakBackend shells out via subprocess.run. Calling
+    any of them directly from this async function would block FastAPI's
+    event loop for the duration of the call.
+
+    TTS failure must never break the underlying text/recommendation
+    response -- the caregiver should always get spoken guidance where
+    possible, but a failed synthesis call must degrade to text-only,
+    not a 500.
+    """
+    if not text:
+        return None
+
+    try:
+        tts_service = _get_tts_service()
+        result = await run_in_threadpool(tts_service.synthesize_reply, text, language)
+    except Exception as exc:
+        logger.error("[%s] TTS synthesis raised an exception: %s", conv_id, exc, exc_info=True)
+        return None
+
+    if not result.success:
+        logger.warning("[%s] TTS synthesis failed (language=%s): %s", conv_id, language, result.error)
+        return None
+
+    filename = Path(result.audio_path).name
+    return f"/audio/{filename}"
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +393,8 @@ async def _run_pipeline(
                 except Exception as exc:
                     logger.error("[%s] DB write FAILED at disambiguation stage: %s", conv_id, exc, exc_info=True)
 
+            audio_url = await _synthesize_and_get_url(pending_q, language, conv_id)
+
             return AssessResponse(
                 conversation_id=conv_id,
                 status="disambiguating",
@@ -324,6 +402,8 @@ async def _run_pipeline(
                 clear_signs=existing_session.intake_output.get("clear_signs", {}),
                 vague_signs=existing_session.remaining_vague_signs,
                 source=source,
+                transcript=transcript,
+                audio_url=audio_url,
             )
 
         # Check if more vague signs remain after processing the current one
@@ -356,6 +436,8 @@ async def _run_pipeline(
                 except Exception as exc:
                     logger.error("[%s] DB write FAILED at disambiguation stage: %s", conv_id, exc, exc_info=True)
 
+            audio_url = await _synthesize_and_get_url(pending_q, language, conv_id)
+
             return AssessResponse(
                 conversation_id=conv_id,
                 status="disambiguating",
@@ -366,6 +448,8 @@ async def _run_pipeline(
                 },
                 vague_signs=existing_session.remaining_vague_signs,
                 source=source,
+                transcript=transcript,
+                audio_url=audio_url,
             )
 
         # All vague signs processed — merge and continue to risk + escalation
@@ -529,6 +613,8 @@ async def _run_pipeline(
                 except Exception as exc:
                     logger.error("[%s] DB write FAILED at disambiguation stage: %s", conv_id, exc, exc_info=True)
 
+            audio_url = await _synthesize_and_get_url(pending_q, language, conv_id)
+
             return AssessResponse(
                 conversation_id=conv_id,
                 status="disambiguating",
@@ -537,6 +623,8 @@ async def _run_pipeline(
                 vague_signs=vague_signs,
                 audit_flags=audit_flags,
                 source=source,
+                transcript=transcript,
+                audio_url=audio_url,
             )
     try:
         RiskCombinationAgentCls = _get_risk_agent()
@@ -628,6 +716,11 @@ async def _run_pipeline(
             logger.error("[%s] DB write FAILED at escalation stage: %s", conv_id, exc, exc_info=True)
 
     # ------------------------------------------------------------------
+    # Text-to-speech for the final recommendation
+    # ------------------------------------------------------------------
+    audio_url = await _synthesize_and_get_url(recommendation, language, conv_id)
+
+    # ------------------------------------------------------------------
     # Build and return response
     # ------------------------------------------------------------------
     return AssessResponse(
@@ -641,6 +734,8 @@ async def _run_pipeline(
         vague_signs=vague_signs,
         audit_flags=audit_flags,
         source=source,
+        transcript=transcript,
+        audio_url=audio_url,
     )
 
 

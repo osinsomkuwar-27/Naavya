@@ -13,11 +13,30 @@ Run locally:
     uvicorn backend.api.main:app --reload --port 8000
 """
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from integrations.whatsapp.webhook import router as whatsapp_router
 from backend.api.routes.assess import router as assess_router
+
+# ---------------------------------------------------------------------------
+# Project root, computed the same way assess.py computes it (dirname-walk
+# from this file's absolute path), just one fewer level since main.py sits
+# one directory shallower (backend/api/) than assess.py (backend/api/routes/).
+# ---------------------------------------------------------------------------
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+
+# TTSService (see backend/api/routes/assess.py::_get_tts_service) writes
+# generated audio files into <project_root>/tts_output. This MUST be the
+# same directory both places compute, or generated files won't be
+# reachable at the URLs we hand back to the frontend.
+_TTS_OUTPUT_DIR = os.path.join(_PROJECT_ROOT, "tts_output")
+os.makedirs(_TTS_OUTPUT_DIR, exist_ok=True)
 
 app = FastAPI(
     title="NeoTriage API",
@@ -38,6 +57,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serves generated TTS audio files at GET /audio/<filename>. Files are
+# written here by TTSService (tts/synthesize.py) via assess.py's
+# _get_tts_service() singleton.
+app.mount("/audio", StaticFiles(directory=_TTS_OUTPUT_DIR), name="audio")
 
 app.include_router(whatsapp_router, tags=["whatsapp"])
 app.include_router(assess_router, tags=["assess"])

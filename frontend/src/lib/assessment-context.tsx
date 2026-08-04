@@ -29,6 +29,8 @@ export interface Assessment {
   summary: string;
   explanation: string;
   nextSteps: string[];
+  transcript: string;
+  audioUrl: string | null;
 }
 
 export interface User {
@@ -202,10 +204,11 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
         const res = await submitVoiceAssessment(audioBlob, draftId, "en", "web_mic");
         const messages: ChatMessage[] = [];
 
-        // Add the transcribed text (or a friendly indicator if audio wasn't transcribed)
-        const userText = res.audit_flags && res.audit_flags.length > 0 && res.audit_flags[0].includes("Intake extraction failed")
-          ? "(Voice note submitted)"
-          : `🎙️ Audio transcript`;
+        // Prefer the real Whisper transcript from the backend; fall back only if it's genuinely empty
+        const userText =
+          res.transcript && res.transcript.trim().length > 0
+            ? res.transcript
+            : "(Voice note submitted — no transcript available)";
 
         messages.push({
           id: uid(),
@@ -386,6 +389,8 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
       explanation: lastRes.recommendation || "No detailed recommendation provided.",
       nextSteps: lastRes.next_steps || [],
       symptoms: Object.keys(lastRes.clear_signs || {}).map((s) => s.replace(/_/g, " ")),
+      transcript: lastRes.transcript || "",
+      audioUrl: lastRes.audio_url ?? null,
     };
 
     setHistory((h) => [finalAssessment, ...h]);

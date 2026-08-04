@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Mic, X, Check, RefreshCw, MessageSquare, Loader2 } from "lucide-react";
+import { Mic, X, Check, RefreshCw, MessageSquare, Loader2, Play, Pause, Trash2 } from "lucide-react";
 import { SiteNav } from "@/components/site-nav";
 import { Button } from "@/components/ui/button";
 import { useAssessment } from "@/lib/assessment-context";
@@ -18,9 +18,12 @@ export function VoicePage() {
   const [state, setState] = useState<State>("idle");
   const [seconds, setSeconds] = useState(0);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
   const timerRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const navigate = useNavigate();
   const { startVoiceDraft, finalize } = useAssessment();
 
@@ -32,6 +35,14 @@ export function VoicePage() {
       };
     }
   }, [state]);
+
+  // Revoke the preview object URL when it changes or the component unmounts,
+  // to avoid leaking memory across repeated record/re-record cycles.
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   const startRecording = async () => {
     try {
@@ -49,6 +60,10 @@ export function VoicePage() {
       mediaRecorder.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: "audio/ogg; codecs=opus" });
         setAudioBlob(blob);
+        setPreviewUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(blob);
+        });
         stream.getTracks().forEach((track) => track.stop());
       };
 
@@ -74,6 +89,31 @@ export function VoicePage() {
     } else if (state === "listening") {
       stopRecording();
     }
+  };
+
+  const togglePreviewPlayback = () => {
+    const audio = previewAudioRef.current;
+    if (!audio) return;
+    if (isPreviewPlaying) {
+      audio.pause();
+    } else {
+      audio.currentTime = 0;
+      audio.play().catch((err) => {
+        console.warn("[Naavya] Recording preview playback failed:", err);
+      });
+    }
+  };
+
+  const resetRecording = () => {
+    previewAudioRef.current?.pause();
+    setIsPreviewPlaying(false);
+    setPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setAudioBlob(null);
+    setSeconds(0);
+    setState("idle");
   };
 
   const done = async () => {
@@ -201,6 +241,38 @@ export function VoicePage() {
 
         {state === "captured" && (
           <div className="mt-8 w-full max-w-md space-y-4">
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+            <audio
+              ref={previewAudioRef}
+              src={previewUrl ?? undefined}
+              onPlay={() => setIsPreviewPlaying(true)}
+              onPause={() => setIsPreviewPlaying(false)}
+              onEnded={() => setIsPreviewPlaying(false)}
+              className="hidden"
+            />
+
+            <div className="flex items-center justify-between rounded-2xl border border-border bg-surface px-4 py-3">
+              <button
+                type="button"
+                onClick={togglePreviewPlayback}
+                disabled={!previewUrl}
+                aria-label={isPreviewPlaying ? "Pause preview" : "Play preview"}
+                className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-50"
+              >
+                {isPreviewPlaying ? (
+                  <Pause className="h-4 w-4" />
+                ) : (
+                  <Play className="ml-0.5 h-4 w-4" />
+                )}
+              </button>
+              <span className="text-sm font-medium text-foreground">
+                {isPreviewPlaying ? "Playing preview…" : "Tap to preview your recording"}
+              </span>
+              <span className="flex-none text-sm tabular-nums text-muted-foreground">
+                {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
+              </span>
+            </div>
+
             <div className="flex flex-wrap gap-3">
               <Button
                 onClick={done}
@@ -210,14 +282,17 @@ export function VoicePage() {
               </Button>
               <Button
                 variant="outline"
-                onClick={() => {
-                  setState("idle");
-                  setSeconds(0);
-                  setAudioBlob(null);
-                }}
+                onClick={resetRecording}
                 className="h-12 rounded-full"
               >
                 <RefreshCw className="mr-2 h-4 w-4" /> Re-record
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={resetRecording}
+                className="h-12 rounded-full text-danger hover:bg-danger-soft hover:text-danger"
+              >
+                <Trash2 className="mr-2 h-4 w-4" /> Discard
               </Button>
             </div>
           </div>

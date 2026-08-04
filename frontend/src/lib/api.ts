@@ -82,6 +82,8 @@ export interface AssessResponse {
   vague_signs: string[];
   audit_flags: string[];
   source?: string;
+  transcript?: string;
+  audio_url?: string | null;
 }
 
 export async function submitAssessment(
@@ -147,3 +149,12 @@ export function mapRiskLevel(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Resolve a backend-relative media path (e.g. audio_url) into a fetchable URL
+// ---------------------------------------------------------------------------
+
+export function resolveMediaUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${API_BASE}${path}`;
+}
