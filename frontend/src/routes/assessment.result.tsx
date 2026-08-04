@@ -95,7 +95,7 @@ function ResultPage() {
       <SiteNav />
       <main className="mx-auto max-w-2xl px-6 py-10 md:py-16">
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <audio ref={audioRef} className="hidden" />
+        <audio ref={audioRef} className="hidden" aria-hidden="true" />
         <div
           className={`nt-reveal relative overflow-hidden rounded-[2rem] border bg-surface p-6 shadow-[var(--shadow-card)] md:p-10 ${cfg.border}`}
         >
@@ -115,22 +115,33 @@ function ResultPage() {
           <div className="flex flex-col items-start gap-4">
             <div className="flex flex-wrap items-center gap-3">
               <RiskBadge risk={lastResult.risk} />
-              {playback === "speaking" && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-primary-soft px-3 py-1 text-xs font-medium text-primary">
-                  <Volume2 className="h-3.5 w-3.5 animate-pulse" /> Speaking…
-                </span>
-              )}
-              
+              {/* aria-live announces playback state changes (speaking/failed/
+                  ended/unavailable) to screen reader users, who otherwise get
+                  no signal that TTS started, stopped, or isn't available. */}
+              <div aria-live="polite" className="flex flex-wrap items-center gap-3">
+                {playback === "speaking" && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-primary-soft px-3 py-1 text-xs font-medium text-primary">
+                    <Volume2 className="h-3.5 w-3.5 animate-pulse" aria-hidden="true" /> Speaking…
+                  </span>
+                )}
+
                 {(playback === "failed" || playback === "ended") && audioUrl && (
-                <button
-                  type="button"
-                  onClick={replay}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1 text-xs font-medium text-foreground hover:bg-primary-soft hover:text-primary"
-                >
-                  <PlayCircle className="h-3.5 w-3.5" />
-                  {playback === "failed" ? "Play recommendation" : "Play again"}
-                </button>
-              )}
+                  <button
+                    type="button"
+                    onClick={replay}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1 text-xs font-medium text-foreground hover:bg-primary-soft hover:text-primary"
+                  >
+                    <PlayCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                    {playback === "failed" ? "Play recommendation" : "Play again"}
+                  </button>
+                )}
+
+                {playback === "unavailable" && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground">
+                    <Volume2 className="h-3.5 w-3.5 opacity-50" aria-hidden="true" /> Audio unavailable — read below
+                  </span>
+                )}
+              </div>
             </div>
             <h1 className="font-display text-3xl font-semibold text-foreground md:text-4xl">
               {lastResult.summary}

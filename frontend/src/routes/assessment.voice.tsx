@@ -24,6 +24,8 @@ export function VoicePage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const isStartingRef = useRef(false);
   const navigate = useNavigate();
   const { startVoiceDraft, finalize } = useAssessment();
 
@@ -44,11 +46,63 @@ export function VoicePage() {
     };
   }, [previewUrl]);
 
+  // Hard stop on unmount: if the user navigates away (e.g. taps "Cancel")
+  // while a recording is still in progress, the MediaRecorder and its
+  // underlying microphone MediaStream must be torn down explicitly here.
+  // Without this, the mic stays "hot" and neither object is ever released,
+  // even though this component is gone.
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      // Browsers do not reliably stop <audio> playback just because the
+      // element is removed from the DOM -- pause explicitly so a playing
+      // preview can't keep making sound after this page is gone.
+      previewAudioRef.current?.pause();
+    };
+  }, []);
+
+  // Preferred recording formats, in priority order. Not every browser
+  // supports every one of these -- notably Safari supports neither WebM
+  // nor Ogg. MediaRecorder.isTypeSupported() lets us pick whichever the
+  // current browser can actually produce, instead of constructing the
+  // recorder with no mimeType (silent browser default) and then labeling
+  // the resulting Blob with a fixed "audio/ogg" type regardless of what
+  // was actually recorded.
+  const PREFERRED_MIME_TYPES = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/mp4",
+  ];
+
+  const pickSupportedMimeType = (): string | undefined => {
+    if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) {
+      return undefined;
+    }
+    return PREFERRED_MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type));
+  };
+
   const startRecording = async () => {
+    // Guards against a fast double-click/tap starting two concurrent
+    // recordings before the first getUserMedia() call has resolved and
+    // state has actually flipped to "listening". Without this, two
+    // MediaStreams/MediaRecorders could be created, and only one would
+    // ever be cleaned up.
+    if (isStartingRef.current) return;
+    isStartingRef.current = true;
+
     try {
       audioChunksRef.current = [];
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
+      streamRef.current = stream;
+
+      const mimeType = pickSupportedMimeType();
+      const mediaRecorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
 
       mediaRecorder.ondataavailable = (event) => {
@@ -58,13 +112,21 @@ export function VoicePage() {
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: "audio/ogg; codecs=opus" });
+        // Label the Blob with whatever the recorder actually produced
+        // (mediaRecorder.mimeType), not a hardcoded guess -- this stays
+        // accurate on every browser, including ones where none of our
+        // preferred types were supported and the browser fell back to
+        // its own default.
+        const blob = new Blob(audioChunksRef.current, {
+          type: mediaRecorder.mimeType || "audio/webm",
+        });
         setAudioBlob(blob);
         setPreviewUrl((prev) => {
           if (prev) URL.revokeObjectURL(prev);
           return URL.createObjectURL(blob);
         });
         stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       };
 
       mediaRecorder.start();
@@ -73,6 +135,8 @@ export function VoicePage() {
     } catch (err) {
       console.warn("Microphone access failed:", err);
       setState("blocked");
+    } finally {
+      isStartingRef.current = false;
     }
   };
 
@@ -120,9 +184,13 @@ export function VoicePage() {
     if (!audioBlob) return;
     setState("uploading");
     try {
-      const { isDone } = await startVoiceDraft(audioBlob);
+      const { draft: finalDraft, isDone } = await startVoiceDraft(audioBlob);
       if (isDone) {
-        await finalize();
+        // Pass the draft object returned directly from startVoiceDraft,
+        // rather than letting finalize() fall back to context state. That
+        // state update and this continuation can race, so finalize() could
+        // otherwise read a stale (or null) draft depending on timing.
+        await finalize(finalDraft);
         navigate({ to: "/assessment/result" });
       } else {
         navigate({ to: "/assessment/chat" });
@@ -138,7 +206,11 @@ export function VoicePage() {
       <SiteNav />
 
       <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-6 py-10 text-center">
-        <div className="mb-2 text-sm font-medium uppercase tracking-wide text-muted-foreground">
+        <div
+          className="mb-2 text-sm font-medium uppercase tracking-wide text-muted-foreground"
+          role="status"
+          aria-live="polite"
+        >
           {state === "idle" && "Ready when you are"}
           {state === "listening" && "Listening…"}
           {state === "captured" && "Recording complete"}

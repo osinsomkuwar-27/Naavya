@@ -59,7 +59,7 @@ interface Ctx {
   startDraft: (method: "voice" | "text", initial: string) => DraftAssessment;
   startVoiceDraft: (audioBlob: Blob) => Promise<{ draft: DraftAssessment; isDone: boolean }>;
   appendUser: (text: string) => Promise<{ done: boolean; pendingQuestion?: string }>;
-  finalize: () => Promise<Assessment>;
+  finalize: (overrideDraft?: DraftAssessment) => Promise<Assessment>;
   clearDraft: () => void;
   getById: (id: string) => Assessment | undefined;
 }
@@ -243,7 +243,10 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
           lastResponse: res,
         };
 
-        setDraft(updatedDraft);
+        // Guard against a slower, earlier request resolving after a newer
+        // draft has already replaced it in context state -- only apply this
+        // update if this draft is still the active one.
+        setDraft((prev) => (prev && prev.id === draftId ? updatedDraft : prev));
         return { draft: updatedDraft, isDone };
 
       } catch (err) {
@@ -267,7 +270,7 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
           ],
           isBackendProcessing: false,
         };
-        setDraft(fallbackDraft);
+        setDraft((prev) => (prev && prev.id === draftId ? fallbackDraft : prev));
         return { draft: fallbackDraft, isDone: false };
       }
     },
@@ -362,42 +365,52 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
     [draft],
   );
 
-  const finalize = useCallback(async (): Promise<Assessment> => {
-    if (!draft) throw new Error("No active draft assessment found.");
+  const finalize = useCallback(
+    async (overrideDraft?: DraftAssessment): Promise<Assessment> => {
+      // Prefer an explicitly-passed draft (used by the voice flow, which
+      // calls this immediately after startVoiceDraft resolves -- see the
+      // comment in assessment.voice.tsx's done() for why relying on the
+      // `draft` closure alone is unsafe there). Falls back to component
+      // state for existing callers (e.g. the text/chat flow) that don't
+      // have this timing hazard.
+      const activeDraft = overrideDraft ?? draft;
+      if (!activeDraft) throw new Error("No active draft assessment found.");
 
-    const lastRes = draft.lastResponse;
+      const lastRes = activeDraft.lastResponse;
 
-    if (!lastRes || lastRes.status !== "classified") {
-      throw new Error("Unable to complete assessment: Backend service did not return a valid classification.");
-    }
+      if (!lastRes || lastRes.status !== "classified") {
+        throw new Error("Unable to complete assessment: Backend service did not return a valid classification.");
+      }
 
-    const risk = mapRiskLevel(lastRes.risk_level);
-    const summary =
-      risk === "high"
-        ? "Visit hospital immediately"
-        : risk === "medium"
-        ? "Contact your ASHA worker"
-        : "Continue home care";
+      const risk = mapRiskLevel(lastRes.risk_level);
+      const summary =
+        risk === "high"
+          ? "Visit hospital immediately"
+          : risk === "medium"
+          ? "Contact your ASHA worker"
+          : "Continue home care";
 
-    const finalAssessment: Assessment = {
-      id: lastRes.conversation_id || draft.id,
-      createdAt: Date.now(),
-      method: draft.method,
-      messages: draft.messages,
-      risk,
-      summary,
-      explanation: lastRes.recommendation || "No detailed recommendation provided.",
-      nextSteps: lastRes.next_steps || [],
-      symptoms: Object.keys(lastRes.clear_signs || {}).map((s) => s.replace(/_/g, " ")),
-      transcript: lastRes.transcript || "",
-      audioUrl: lastRes.audio_url ?? null,
-    };
+      const finalAssessment: Assessment = {
+        id: lastRes.conversation_id || activeDraft.id,
+        createdAt: Date.now(),
+        method: activeDraft.method,
+        messages: activeDraft.messages,
+        risk,
+        summary,
+        explanation: lastRes.recommendation || "No detailed recommendation provided.",
+        nextSteps: lastRes.next_steps || [],
+        symptoms: Object.keys(lastRes.clear_signs || {}).map((s) => s.replace(/_/g, " ")),
+        transcript: lastRes.transcript || "",
+        audioUrl: lastRes.audio_url ?? null,
+      };
 
-    setHistory((h) => [finalAssessment, ...h]);
-    setLastResult(finalAssessment);
-    setDraft(null);
-    return finalAssessment;
-  }, [draft]);
+      setHistory((h) => [finalAssessment, ...h]);
+      setLastResult(finalAssessment);
+      setDraft(null);
+      return finalAssessment;
+    },
+    [draft],
+  );
 
   const clearDraft = useCallback(() => setDraft(null), []);
 

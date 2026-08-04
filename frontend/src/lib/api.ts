@@ -99,6 +99,19 @@ export async function submitAssessment(
 // Endpoint: POST /assess/voice
 // ---------------------------------------------------------------------------
 
+// Picks a filename extension that matches what MediaRecorder actually
+// produced (audioBlob.type), instead of a hardcoded guess. The browser
+// sets the multipart Content-Type from Blob.type regardless of filename,
+// so this is primarily for accurate server-side logging/storage rather
+// than correctness of transcription itself.
+function extensionForMimeType(mimeType: string): string {
+  if (mimeType.includes("webm")) return "webm";
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("mp4")) return "m4a";
+  if (mimeType.includes("wav")) return "wav";
+  return "webm";
+}
+
 export async function submitVoiceAssessment(
   audioBlob: Blob,
   conversationId?: string,
@@ -106,7 +119,8 @@ export async function submitVoiceAssessment(
   source = "web_mic",
 ): Promise<AssessResponse> {
   const formData = new FormData();
-  formData.append("audio", audioBlob, "recording.ogg");
+  const ext = extensionForMimeType(audioBlob.type);
+  formData.append("audio", audioBlob, `recording.${ext}`);
   if (conversationId) formData.append("conversation_id", conversationId);
   formData.append("language", language);
   formData.append("source", source);
