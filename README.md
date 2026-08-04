@@ -19,6 +19,11 @@ Naavya is a voice-first, regional-language triage assistant that gives every rur
 -  Every classification traceable to a specific IMNCI rule ID and government source document
 -  WhatsApp Business Cloud API + web mic fallback, designed to sit behind an IVR number later
 -  Bias/fairness test suite (11 checks) — demographic neutrality, determinism, source fairness, boundary consistency
+- Voice recording preview before submission
+- Local Whisper ASR with transcript display
+- AI-generated voice responses using Text-to-Speech (TTS)
+- Automatic audio playback with replay support
+- End-to-end voice assessment workflow (Record → Transcript →Recommendation → Voice Reply)
 
 ---
 
@@ -32,9 +37,10 @@ Naavya is a voice-first, regional-language triage assistant that gives every rur
 | Backend API | FastAPI (Python) |
 | Guideline data | Structured JSON, sourced from official IMNCI/HBNC government PDFs |
 | Messaging channel | WhatsApp Business Cloud API + web mic fallback |
-| Database | SQLite (PoC) → planned relational DB for production |
+| Database | MongoDB |
 | Frontend | Web app (voice-first UI — see [Frontend](#-frontend)) |
 | Bias/fairness testing | Custom test suite (11 checks) |
+| TTS | Cartesia (primary) + gTTS fallback |
 | Hosting | _TBD_ |
 
 ---
@@ -52,8 +58,19 @@ flowchart TD
     MCP --> RuleTable[(IMNCI Rule Table — Government Guideline JSON)]
     Risk --> Escalation[Escalation / Reply Generation]
     Escalation --> Caregiver[Caregiver Reply]
-    Escalation -->|urgent only| ASHA[ASHA Worker Alert]
-    Escalation --> DB[(SQLite — Session + Log Store)]
+    Caregiver[Caregiver - Web Mic / WhatsApp Voice] --> ASR[Whisper ASR]
+    ASR --> Intake[Intake Agent]
+    Intake --> Disambiguation[Disambiguation Agent]
+    Disambiguation -->|Need More Information| Caregiver
+    Disambiguation -->|Complete| Risk[Risk Combination Agent]
+    Risk --> MCP[MCP IMNCI Lookup]
+    MCP --> Rules[IMNCI Rule Database]
+    Risk --> Escalation[Escalation Agent]
+    Escalation --> TTS[Cartesia / gTTS]
+    TTS --> VoiceReply[Voice Recommendation]
+    Escalation --> TextReply[Text Recommendation]
+    Escalation -->|Urgent| ASHA[ASHA Alert]
+    Escalation --> Mongo[(MongoDB)]
 ```
 
 ---
