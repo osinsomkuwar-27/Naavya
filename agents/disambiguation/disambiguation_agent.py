@@ -116,6 +116,11 @@ QUESTION_BANK = {
         "answer_map": {},  # parsed numerically, not by keyword — see below
         "target_field": "jaundice_onset",
     },
+    "age_days": {
+        "question": "How many days old is the baby today?",
+        "answer_map": {},  
+        "target_field": "age_days",
+    },
     "movement": {
         "question": (
             "Is the baby moving normally on their own — arms, legs, "
@@ -158,6 +163,7 @@ _GENERIC_FALLBACK_TEMPLATE = (
     "Can you tell me a bit more about the baby's {sign_key}? "
     "Anything you've noticed, even if you're not sure it matters."
 )
+_MULTI_FIELD_SIGN_KEYS = {"jaundice_age"}
 
 
 @dataclass
@@ -189,10 +195,13 @@ class DisambiguationAgent:
             return entry["question"]
         return _GENERIC_FALLBACK_TEMPLATE.format(sign_key=sign_key.replace("_", " "))
 
-    def interpret_answer(self, sign_key: str, answer_text: str) -> Optional[str]:
+    def interpret_answer(self, sign_key: str, answer_text: str):
         """Very simple keyword matcher for the PoC. In production this
         step is where an LLM call or a proper NLU model would sit —
-        kept rule-based here so behaviour is auditable and testable."""
+        kept rule-based here so behaviour is auditable and testable.
+
+        Returns None if unresolved, a dict for multi-field sign_keys
+        (see _MULTI_FIELD_SIGN_KEYS), or a scalar value otherwise."""
         entry = QUESTION_BANK.get(sign_key)
         if not entry:
             return None
@@ -202,6 +211,9 @@ class DisambiguationAgent:
         if sign_key == "jaundice_age":
             return self._parse_age_answer(answer_text)
 
+        if sign_key == "age_days":
+            return self._parse_plain_age_answer(answer_text)
+
         for keyword, value in entry["answer_map"].items():
             if keyword in answer_lower and not _is_negated(answer_lower, keyword):
                 return value
@@ -210,8 +222,6 @@ class DisambiguationAgent:
     def _parse_age_answer(self, answer_text: str) -> Optional[dict]:
         """Extract baby's current age in days and jaundice onset day from
         free text like 'baby is 16 days old, saw it about 3 days ago'."""
-        import re
-
         numbers = [int(n) for n in re.findall(r"\d+", answer_text)]
         if not numbers:
             return None
@@ -227,6 +237,21 @@ class DisambiguationAgent:
             ),
         }
 
+    def _parse_plain_age_answer(self, answer_text: str) -> Optional[int]:
+        """Extract a plain day-count from free text like '8 days old' or
+        'She is 8 days old.'. Returns None (unresolved -- ask again) if no
+        number is found, or if the number falls outside the valid IMNCI
+        'Sick Young Infant' range (0-59 days), since a wildly out-of-range
+        value is more likely a misheard/mistyped answer than genuine data
+        we should silently accept."""
+        numbers = [int(n) for n in re.findall(r"\d+", answer_text)]
+        if not numbers:
+            return None
+        age = numbers[0]
+        if not (0 <= age <= 59):
+            return None
+        return age
+
     def resume_disambiguation(
         self, sign_key: str, answer_text: str,
         already_resolved: dict, already_unresolved: list,
@@ -238,7 +263,10 @@ class DisambiguationAgent:
         his pending_disambiguation table (conversation_id-keyed)."""
         parsed = self.interpret_answer(sign_key, answer_text)
         if parsed is not None:
-            already_resolved[QUESTION_BANK[sign_key]['target_field']] = parsed
+            if sign_key in _MULTI_FIELD_SIGN_KEYS:
+                already_resolved.update(parsed)
+            else:
+                already_resolved[QUESTION_BANK[sign_key]['target_field']] = parsed
             return {"status": "resolved", "resolved_signs": already_resolved}
         if attempts_so_far + 1 >= MAX_DISAMBIGUATION_ROUNDS:
             already_unresolved.append(sign_key)
@@ -264,7 +292,7 @@ class DisambiguationAgent:
             parsed = self.interpret_answer(sign_key, answer_text)
 
             if parsed is not None:
-                if sign_key == "jaundice_age":
+                if sign_key in _MULTI_FIELD_SIGN_KEYS:
                     result.resolved_signs.update(parsed)
                 else:
                     result.resolved_signs[entry["target_field"]] = parsed

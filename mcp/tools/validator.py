@@ -10,6 +10,7 @@ for a clinical decision tool. Fail loud, not silent.
 
 import json
 import os
+from typing import Optional
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "imnci_rules")
 
@@ -26,6 +27,41 @@ _SCHEMA = _load_schema()
 class ValidationError(Exception):
     """Raised when signs input doesn't match the known schema."""
     pass
+
+
+def coerce_age_days(value) -> Optional[int]:
+    """
+    Normalizes an age_days value that may arrive as a real int, a
+    numeric string ('8'), or occasionally a float (8.0), depending on
+    how the LLM formatted its JSON output. LLMs are not perfectly
+    type-strict even when the prompt explicitly says "integer" -- the
+    extraction prompt's own example shows every field as a quoted JSON
+    string, so age_days frequently comes back as "8" rather than 8.
+    A genuinely correct age must not be rejected just because of that.
+
+    Returns a plain int in [0, 59] if the value is valid, otherwise None.
+
+    Deliberately excludes bool: isinstance(True, int) is True in
+    Python, so without this explicit guard a stray boolean would
+    silently coerce to age_days=1 or age_days=0.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        age = value
+    elif isinstance(value, float) and value.is_integer():
+        age = int(value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped.lstrip("-").isdigit():
+            return None
+        age = int(stripped)
+    else:
+        return None
+
+    if not (0 <= age <= 59):
+        return None
+    return age
 
 
 def validate_signs(signs: dict) -> dict:
@@ -52,7 +88,7 @@ def validate_signs(signs: dict) -> dict:
 
         if isinstance(allowed_values, str):
             if key == "age_days":
-                if not isinstance(value, int) or not (0 <= value <= 59):
+                if coerce_age_days(value) is None:
                     errors.append(
                         f"'{key}' must be an integer 0-59, got: {value!r}"
                     )

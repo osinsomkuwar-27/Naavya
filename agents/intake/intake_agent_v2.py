@@ -54,7 +54,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "mcp"))
-from tools.validator import validate_signs  # noqa: E402
+from tools.validator import validate_signs, coerce_age_days  # noqa: E402
 
 logger = logging.getLogger("neotriage.intake_v2")
 logging.basicConfig(level=logging.INFO)
@@ -129,6 +129,7 @@ INSTRUCTIONS:
 2. For each sign category the caregiver mentioned but too vaguely to map confidently to one specific value (e.g. "not doing well" for feeding, without saying refusing vs. reduced), list the field name under "vague_signs" instead -- do NOT guess a specific value.
 3. If a sign category was not mentioned at all, omit it entirely from both lists. Absence is "unknown", not "normal" -- never infer a normal/healthy value for something that was never mentioned.
 4. Only use field names and values that appear EXACTLY in the allowed list above. If you are unsure a value truly matches, put the field name in vague_signs instead of guessing.
+5. "age_days" must be output as a bare JSON number (e.g. 8), never as a quoted string (e.g. NOT "8") -- even though other fields in the example below are shown quoted.
 
 Respond with ONLY valid JSON, no other text, in this exact shape:
 {{"clear_signs": {{"field_name": "value", ...}}, "vague_signs": ["field_name", ...]}}"""
@@ -140,17 +141,19 @@ Respond with ONLY valid JSON, no other text, in this exact shape:
 # "jaundice_onset"). Shreeja's disambiguation QUESTION_BANK uses a SEPARATE,
 # slightly different key vocabulary for vague signs (e.g. "breathing",
 # "jaundice_age") -- a holdover convention from the original v1 intake
-# agent. These two vocabularies coincide for 3 of 5 categories and
-# silently diverge for 2 -- without this translation, a vague sign
+# agent. These two vocabularies coincide for most categories and
+# diverge for a couple -- without this translation, a vague sign
 # correctly identified by the LLM as "breathing_rate" would fail
 # QUESTION_BANK.get("breathing_rate") -> None downstream, and no
-# follow-up question would ever be asked.
+# follow-up question would ever be asked. "age_days" is NOT translated
+# here because it now has its own QUESTION_BANK entry under that exact
+# key (see disambiguation_agent.py) -- it doesn't need remapping.
 # ---------------------------------------------------------------------------
 _SCHEMA_TO_QUESTION_BANK_KEY = {
     "breathing_rate": "breathing",
     "jaundice_onset": "jaundice_age",
-    # feeding, temperature, jaundice_extent already match QUESTION_BANK
-    # keys exactly and need no translation.
+    # feeding, temperature, jaundice_extent, age_days already match
+    # QUESTION_BANK keys exactly and need no translation.
 }
 
 
@@ -211,7 +214,10 @@ _AUDIT_KEYWORDS = {
     "jaundice_onset": ["yellow", "peela", "jaundice", "haladi"],
     "jaundice_extent": ["yellow", "peela", "jaundice", "haladi"],
     "convulsions": ["fit", "jhatke", "convuls", "seizure"],
-    "movement": ["move", "active", "hilta", "lethargic"],
+    "movement": [
+        "move", "moving", "movement", "active", "hilta", "lethargic",
+        "limp", "still", "stiff",
+    ],
 }
 
 
@@ -274,6 +280,8 @@ def extract_signs(transcript: str, language: str = "en") -> IntakeResult:
                 f"LLM claimed '{key}'='{value}' but this failed schema validation "
                 f"-- demoted to vague_signs rather than trusted."
             )
+        elif key == "age_days":
+            result.clear_signs[key] = coerce_age_days(value)
         else:
             result.clear_signs[key] = value
 
