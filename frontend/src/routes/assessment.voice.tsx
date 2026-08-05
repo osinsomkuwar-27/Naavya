@@ -27,7 +27,7 @@ export function VoicePage() {
   const streamRef = useRef<MediaStream | null>(null);
   const isStartingRef = useRef(false);
   const navigate = useNavigate();
-  const { startVoiceDraft, finalize } = useAssessment();
+  const { startVoiceDraft } = useAssessment();
 
   useEffect(() => {
     if (state === "listening") {
@@ -184,14 +184,9 @@ export function VoicePage() {
     if (!audioBlob) return;
     setState("uploading");
     try {
-      const { draft: finalDraft, isDone } = await startVoiceDraft(audioBlob);
+      const { isDone } = await startVoiceDraft(audioBlob);
       if (isDone) {
-        // Pass the draft object returned directly from startVoiceDraft,
-        // rather than letting finalize() fall back to context state. That
-        // state update and this continuation can race, so finalize() could
-        // otherwise read a stale (or null) draft depending on timing.
-        await finalize(finalDraft);
-        navigate({ to: "/assessment/result" });
+        navigate({ to: "/assessment/processing" });
       } else {
         navigate({ to: "/assessment/chat" });
       }

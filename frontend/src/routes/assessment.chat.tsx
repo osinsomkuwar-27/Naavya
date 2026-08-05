@@ -13,7 +13,7 @@ export const Route = createFileRoute("/assessment/chat")({
 });
 
 function ChatPage() {
-  const { draft, startDraft, appendUser, finalize } = useAssessment();
+  const { draft, startDraft, appendUser } = useAssessment();
   const navigate = useNavigate();
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
@@ -31,13 +31,12 @@ function ChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [draft?.messages.length, typing]);
 
-   useEffect(() => {
+  useEffect(() => {
     if (draft?.isClassified && phase !== "finishing") {
       setPhase("finishing");
-      const t = setTimeout(() => navigate({ to: "/assessment/processing" }), 800);
-      return () => clearTimeout(t);
+      navigate({ to: "/assessment/processing" });
     }
-  }, [draft?.isClassified, navigate]);
+  }, [draft?.isClassified, phase, navigate]);
 
   const messages: ChatMessage[] = draft?.messages ?? [];
 
@@ -54,12 +53,7 @@ function ChatPage() {
     setTyping(false);
     if (done) {
       setPhase("finishing");
-      try {
-        await finalize();
-        setTimeout(() => navigate({ to: "/assessment/result" }), 600);
-      } catch (err) {
-        console.error("Failed to finalize chat assessment:", err);
-      }
+      navigate({ to: "/assessment/processing" });
     }
   };
 

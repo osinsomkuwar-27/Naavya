@@ -28,20 +28,32 @@ function ProcessingPage() {
   useEffect(() => {
     if (!draft) return;
     const t1 = window.setInterval(() => setI((v) => (v + 1) % STEPS.length), 1400);
-    const t2 = window.setTimeout(async () => {
+
+    if (!draft.lastResponse) {
+      return () => {
+        window.clearInterval(t1);
+      };
+    }
+
+    let cancelled = false;
+    const runFinalize = async () => {
       try {
         await finalize();
-        navigate({ to: "/assessment/result" });
+        if (!cancelled) navigate({ to: "/assessment/result" });
       } catch (err) {
-        setFailed(true);
-        setErrorMsg(err instanceof Error ? err.message : "Assessment could not be finalized.");
+        if (!cancelled) {
+          setFailed(true);
+          setErrorMsg(err instanceof Error ? err.message : "Assessment could not be finalized.");
+        }
       }
-    }, 2000);
-    return () => {
-      window.clearInterval(t1);
-      window.clearTimeout(t2);
     };
-  }, [draft, finalize, navigate]);
+
+    void runFinalize();
+    return () => {
+      cancelled = true;
+      window.clearInterval(t1);
+    };
+  }, [draft?.lastResponse, draft, finalize, navigate]);
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -56,8 +68,20 @@ function ProcessingPage() {
               {errorMsg || "Unable to retrieve clinical classification from backend."}
             </p>
             <div className="mt-6 flex flex-wrap justify-center gap-2">
-              <Button asChild className="h-12 rounded-full">
-                <Link to="/assessment/chat">Return to chat</Link>
+              <Button
+                className="h-12 rounded-full"
+                onClick={() => {
+                  setFailed(false);
+                  setErrorMsg(null);
+                  if (draft?.lastResponse) {
+                    void finalize().then(() => navigate({ to: "/assessment/result" })).catch((err) => {
+                      setFailed(true);
+                      setErrorMsg(err instanceof Error ? err.message : "Assessment could not be finalized.");
+                    });
+                  }
+                }}
+              >
+                Retry
               </Button>
               <Button asChild variant="outline" className="h-12 rounded-full">
                 <Link to="/assessment">Start new assessment</Link>

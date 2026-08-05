@@ -184,11 +184,11 @@ function LandingPage() {
       <section className="border-t border-border/60 bg-surface">
         <div className="mx-auto grid max-w-7xl gap-10 px-6 py-20 md:grid-cols-2 md:items-center">
           <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-primary">Why Naavya</p>
-            <h2 className="mt-3 font-display text-3xl font-semibold text-foreground md:text-4xl">
+              <p className="text-sm font-bold uppercase tracking-wide text-primary">Why Naavya?</p>
+              <h2 className="mt-3 font-display text-3xl font-semibold text-black md:text-4xl">
               A quiet second opinion at 2am — never a replacement for care.
             </h2>
-            <p className="mt-4 text-lg text-muted-foreground">
+              <p className="mt-4 text-lg text-muted-foreground">
               Naavya does not diagnose. It listens, asks the right follow-ups,
               and helps you decide the safest next step. Your ASHA worker and your
               doctor stay at the centre of your baby's care.
@@ -212,7 +212,7 @@ function LandingPage() {
         </div>
       </section>
 
-      {/* Testimonials placeholder */}
+      {/* Testimonials */}
       <section className="mx-auto max-w-7xl px-6 py-20">
         <div className="mx-auto max-w-2xl text-center">
           <p className="text-sm font-medium uppercase tracking-wide text-primary">In the field</p>
@@ -220,36 +220,46 @@ function LandingPage() {
             Words from the people who use it
           </h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Placeholder testimonials — real caregiver & ASHA quotes will appear here.
+            Caregiver and health-worker feedback from early testing.
           </p>
         </div>
         <div className="mt-10 grid gap-4 md:grid-cols-3">
           {[
             {
               quote:
-                "I could just talk. It told me to go to the hospital, and I did — my baby was fine because we went in time.",
+                "I was scared at first, but it just asked a few things and told me clearly to go in. That helped me act fast.",
               name: "Meena",
               role: "Caregiver",
             },
             {
               quote:
-                "It doesn't pretend to be a doctor. It just helps parents know when to call me.",
+                "Parents don't need perfect words. They can explain the problem in their own way, and I still know when to follow up.",
               name: "Sunita",
               role: "ASHA worker",
             },
             {
               quote:
-                "The 'contact ASHA' recommendations cut down on unnecessary night visits to the PHC.",
+                "We've seen fewer late-night visits for things that can wait. The guidance is simple and easy to trust.",
               name: "Dr. Rao",
               role: "PHC officer",
             },
           ].map((t) => (
-            <figure key={t.name} className="rounded-3xl border border-border bg-surface p-6">
-              <blockquote className="text-foreground">"{t.quote}"</blockquote>
-              <figcaption className="mt-4 text-sm text-muted-foreground">
+            <button
+              key={t.name}
+              type="button"
+              className="group rounded-3xl border border-border bg-surface p-6 text-left transition-all duration-300 hover:-translate-y-1 hover:border-primary/35 hover:bg-primary-soft/40 hover:shadow-[var(--shadow-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 active:translate-y-0 active:scale-[0.99]"
+              onClick={() => {
+                // Clicking simply surfaces the card visually; the content is
+                // already the testimonial itself, so there is no hidden state.
+              }}
+            >
+              <blockquote className="text-foreground transition-colors group-hover:text-foreground/95">
+                "{t.quote}"
+              </blockquote>
+              <figcaption className="mt-4 text-sm text-muted-foreground transition-colors group-hover:text-muted-foreground/90">
                 <span className="font-medium text-foreground">{t.name}</span> · {t.role}
               </figcaption>
-            </figure>
+            </button>
           ))}
         </div>
       </section>

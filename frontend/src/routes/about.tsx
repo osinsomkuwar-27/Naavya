@@ -72,7 +72,7 @@ function AboutPage() {
       <SiteNav />
 
       <main className="mx-auto max-w-3xl px-6 py-16 md:py-24">
-        <p className="text-sm font-medium uppercase tracking-wide text-primary">About Naavya</p>
+        <p className="text-sm font-bold uppercase tracking-wide text-primary">About Naavya</p>
         <h1 className="mt-3 font-display text-4xl font-semibold text-foreground md:text-5xl">
           A calm second opinion for newborn care.
         </h1>
