@@ -4,6 +4,7 @@ import { Mic, X, Check, RefreshCw, MessageSquare, Loader2, Play, Pause, Trash2 }
 import { SiteNav } from "@/components/site-nav";
 import { Button } from "@/components/ui/button";
 import { useAssessment } from "@/lib/assessment-context";
+import { resolveMediaUrl } from "@/lib/api";
 
 export const Route = createFileRoute("/assessment/voice")({
   head: () => ({
@@ -27,7 +28,11 @@ export function VoicePage() {
   const streamRef = useRef<MediaStream | null>(null);
   const isStartingRef = useRef(false);
   const navigate = useNavigate();
-  const { startVoiceDraft } = useAssessment();
+  const { startVoiceDraft, appendVoiceUser, draft } = useAssessment();
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);  
+  const [pendingQuestionAudioUrl, setPendingQuestionAudioUrl] = useState<string | null>(null);
+  const [playback, setPlayback] = useState<"idle" | "speaking" | "ended" | "failed" | "unavailable">("idle");
+  const questionAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     if (state === "listening") {
@@ -61,8 +66,51 @@ export function VoicePage() {
       // element is removed from the DOM -- pause explicitly so a playing
       // preview can't keep making sound after this page is gone.
       previewAudioRef.current?.pause();
+      questionAudioRef.current?.pause();
     };
   }, []);
+
+  useEffect(() => {
+    const audio = questionAudioRef.current;
+    if (!pendingQuestionAudioUrl || !audio) {
+      setPlayback(pendingQuestion ? "unavailable" : "idle");
+      return;
+    }
+
+    const handleEnded = () => setPlayback("ended");
+    const handleError = () => {
+      console.warn("[Naavya] Follow-up question TTS failed to load/play:", pendingQuestionAudioUrl);
+      setPlayback("failed");
+    };
+
+    audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("error", handleError);
+
+    audio.src = pendingQuestionAudioUrl;
+    setPlayback("speaking");
+    audio.play().catch((err) => {
+      console.warn("[Naavya] Autoplay of follow-up question was blocked or failed:", err);
+      setPlayback("failed");
+    });
+
+    return () => {
+      audio.pause();
+      audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("error", handleError);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingQuestionAudioUrl]);
+
+  const replayQuestion = () => {
+    const audio = questionAudioRef.current;
+    if (!audio || !pendingQuestionAudioUrl) return;
+    setPlayback("speaking");
+    audio.currentTime = 0;
+    audio.play().catch((err) => {
+      console.warn("[Naavya] Manual replay of follow-up question failed:", err);
+      setPlayback("failed");
+    });
+  };
 
   // Preferred recording formats, in priority order. Not every browser
   // supports every one of these -- notably Safari supports neither WebM
@@ -180,46 +228,82 @@ export function VoicePage() {
     setState("idle");
   };
 
-  const done = async () => {
-    if (!audioBlob) return;
-    setState("uploading");
-    try {
-      const { isDone } = await startVoiceDraft(audioBlob);
+const done = async () => {
+  if (!audioBlob) return;
+  setState("uploading");
+  try {
+    if (draft) {
+      const { done: isDone, pendingQuestion: nextQ, audioUrl } = await appendVoiceUser(audioBlob);
       if (isDone) {
         navigate({ to: "/assessment/processing" });
-      } else {
-        navigate({ to: "/assessment/chat" });
+        return;
       }
-    } catch (err) {
-      console.warn("Voice upload error:", err);
-      navigate({ to: "/assessment/chat" });
+      setPendingQuestion(nextQ ?? null);
+      setPendingQuestionAudioUrl(resolveMediaUrl(audioUrl ?? null));
+      resetRecording();
+      return;
     }
-  };
+
+    const { draft: newDraft, isDone } = await startVoiceDraft(audioBlob);
+    if (isDone) {
+      navigate({ to: "/assessment/processing" });
+      return;
+    }
+    setPendingQuestion(newDraft.lastResponse?.pending_question ?? null);
+    setPendingQuestionAudioUrl(resolveMediaUrl(newDraft.lastResponse?.audio_url ?? null));
+    resetRecording();
+  } catch (err) {
+    console.warn("Voice upload error:", err);
+    navigate({ to: "/assessment/chat" });
+  }
+};
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <SiteNav />
 
       <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-6 py-10 text-center">
-        <div
-          className="mb-2 text-sm font-medium uppercase tracking-wide text-muted-foreground"
-          role="status"
-          aria-live="polite"
-        >
-          {state === "idle" && "Ready when you are"}
-          {state === "listening" && "Listening…"}
-          {state === "captured" && "Recording complete"}
-          {state === "uploading" && "Transcribing audio via ASR…"}
-          {state === "blocked" && "Microphone not available"}
-        </div>
+       <div className="mb-2 text-sm font-medium uppercase tracking-wide text-muted-foreground" role="status" aria-live="polite">
+        {state === "idle" && (pendingQuestion ? "One more question" : "Ready when you are")}
+        {state === "listening" && "Listening…"}
+        {state === "captured" && "Recording complete"}
+        {state === "uploading" && "Transcribing audio via ASR…"}
+        {state === "blocked" && "Microphone not available"}
+      </div>
 
-        <h1 className="mb-10 max-w-md font-display text-2xl font-semibold text-foreground md:text-3xl">
-          {state === "idle" && "Tap to describe what's happening with your baby."}
-          {state === "listening" && "Speak in your own words — take your time."}
-          {state === "captured" && "Ready to send your voice note?"}
-          {state === "uploading" && "Processing your recording with Naavya backend…"}
-          {state === "blocked" && "We couldn't access your microphone."}
-        </h1>
+      <h1 className="mb-10 max-w-md font-display text-2xl text-foreground md:text-3xl">
+        {state === "idle" && pendingQuestion ? (
+          <span className="font-normal">{pendingQuestion}</span>
+        ) : (
+          <span className="font-semibold">
+            {state === "idle" && "Tap to describe what's happening with your baby."}
+            {state === "listening" && "Speak in your own words — take your time."}
+            {state === "captured" && "Ready to send your voice note?"}
+            {state === "uploading" && "Processing your recording with Naavya backend…"}
+            {state === "blocked" && "We couldn't access your microphone."}
+          </span>
+        )}
+      </h1>
+
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <audio ref={questionAudioRef} className="hidden" aria-hidden="true" />
+
+      <div aria-live="polite" className="mb-2 flex justify-center">
+        {playback === "speaking" && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-primary-soft px-3 py-1 text-xs font-medium text-primary">
+            Speaking…
+          </span>
+        )}
+        {(playback === "failed" || playback === "ended") && pendingQuestionAudioUrl && (
+          <button
+            type="button"
+            onClick={replayQuestion}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1 text-xs font-medium text-foreground hover:bg-primary-soft hover:text-primary"
+          >
+            {playback === "failed" ? "Play question" : "Play again"}
+          </button>
+        )}
+      </div>
 
         {state !== "blocked" && (
           <div className="relative flex h-64 w-64 items-center justify-center">

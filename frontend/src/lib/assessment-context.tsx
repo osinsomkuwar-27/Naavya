@@ -59,6 +59,7 @@ interface Ctx {
   startDraft: (method: "voice" | "text", initial: string) => DraftAssessment;
   startVoiceDraft: (audioBlob: Blob) => Promise<{ draft: DraftAssessment; isDone: boolean }>;
   appendUser: (text: string) => Promise<{ done: boolean; pendingQuestion?: string }>;
+  appendVoiceUser: (audioBlob: Blob) => Promise<{ done: boolean; pendingQuestion?: string; audioUrl?: string | null }>;
   finalize: (overrideDraft?: DraftAssessment) => Promise<Assessment>;
   clearDraft: () => void;
   getById: (id: string) => Assessment | undefined;
@@ -365,6 +366,84 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
     [draft],
   );
 
+
+  const appendVoiceUser = useCallback(
+    async (audioBlob: Blob) => {
+      if (!draft) return { done: true };
+
+      const currentDraftId = draft.id;
+
+      setDraft((prev) => (prev ? { ...prev, isBackendProcessing: true } : null));
+
+      try {
+        const res = await submitVoiceAssessment(audioBlob, currentDraftId, "en", "web_mic");
+
+        const userText =
+          res.transcript && res.transcript.trim().length > 0
+            ? res.transcript
+            : "(Voice note submitted — no transcript available)";
+
+        const isDisambiguating = res.status === "disambiguating" && !!res.pending_question;
+        const isDone = !isDisambiguating;
+
+        setDraft((prev) => {
+          if (!prev || prev.id !== currentDraftId) return prev;
+          const msgs: ChatMessage[] = [
+            ...prev.messages,
+            { id: uid(), role: "user", text: userText, timestamp: Date.now() },
+          ];
+
+          if (isDisambiguating) {
+            msgs.push({
+              id: uid(),
+              role: "bot",
+              text: res.pending_question!,
+              timestamp: Date.now(),
+            });
+          } else {
+            msgs.push({
+              id: uid(),
+              role: "bot",
+              text: res.recommendation || "Got it — checking this now.",
+              timestamp: Date.now(),
+            });
+          }
+
+          return {
+            ...prev,
+            messages: msgs,
+            isBackendProcessing: false,
+            isClassified: res.status === "classified",
+            lastResponse: res,
+          };
+        });
+
+        return { done: isDone, pendingQuestion: isDisambiguating ? res.pending_question : undefined, audioUrl: res.audio_url ?? null, };
+      } catch (err) {
+        console.error("[Naavya] Voice follow-up backend call failed:", err);
+        const errorMsg = err instanceof Error ? err.message : "Backend service error";
+        setDraft((prev) => {
+          if (!prev || prev.id !== currentDraftId) return prev;
+          return {
+            ...prev,
+            messages: [
+              ...prev.messages,
+              {
+                id: uid(),
+                role: "bot",
+                text: `⚠️ Voice Backend Error: ${errorMsg}. Failed to process response.`,
+                timestamp: Date.now(),
+              },
+            ],
+            isBackendProcessing: false,
+          };
+        });
+        return { done: false };
+      }
+    },
+    [draft],
+  );
+
   const finalize = useCallback(
     async (overrideDraft?: DraftAssessment): Promise<Assessment> => {
       // Prefer an explicitly-passed draft (used by the voice flow, which
@@ -430,11 +509,12 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
       startDraft,
       startVoiceDraft,
       appendUser,
+      appendVoiceUser,
       finalize,
       clearDraft,
       getById,
     }),
-    [user, history, draft, lastResult, startDraft, startVoiceDraft, appendUser, finalize, clearDraft, getById],
+    [user, history, draft, lastResult, startDraft, startVoiceDraft, appendUser,appendVoiceUser, finalize, clearDraft, getById],
   );
 
   return <AssessmentContext.Provider value={value}>{children}</AssessmentContext.Provider>;
