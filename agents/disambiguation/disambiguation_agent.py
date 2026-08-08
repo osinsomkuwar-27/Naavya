@@ -19,6 +19,7 @@ SAFE_FALLBACK_MESSAGE = (
 
 _NEGATION_WORDS = re.compile(r"\b(not|no|n't|isn't|doesn't|wasn't|never|without)\b")
 _NEGATION_LOOKBACK_CHARS = 20
+_CLAUSE_BREAK = re.compile(r"[,.;!?]|\b(?:but|and)\b")
 
 
 def _is_negated(text: str, keyword: str) -> bool:
@@ -27,6 +28,12 @@ def _is_negated(text: str, keyword: str) -> bool:
         return False
     window_start = max(0, idx - _NEGATION_LOOKBACK_CHARS)
     window = text[window_start:idx]
+    last_break = None
+    for match in _CLAUSE_BREAK.finditer(window):
+        last_break = match
+    if last_break:
+        window = window[last_break.end():]
+
     return bool(_NEGATION_WORDS.search(window))
 
 
@@ -46,12 +53,26 @@ QUESTION_BANK = {
         ),
         "answer_map": {
             "refusing": "not_able_to_feed_at_all",
-            "not at all": "not_able_to_feed_at_all",
+            "not able to feed": "not_able_to_feed_at_all",
+            "unable to feed": "not_able_to_feed_at_all",
+            "can't feed": "not_able_to_feed_at_all",
+            "cant feed": "not_able_to_feed_at_all",
+            "not feeding at all": "not_able_to_feed_at_all",
+            "not eating at all": "not_able_to_feed_at_all",
             "won't feed": "not_able_to_feed_at_all",
+            "wont feed": "not_able_to_feed_at_all",
+            "won't eat": "not_able_to_feed_at_all",
+            "wont eat": "not_able_to_feed_at_all",
+            "not at all": "not_able_to_feed_at_all",
+            "not feeding well": "not_feeding_well",
+            "not eating well": "not_feeding_well",
             "shorter": "not_feeding_well",
             "less": "not_feeding_well",
             "weak": "not_feeding_well",
             "sleepy": "not_feeding_well",
+            "poor feeding": "not_feeding_well",
+            "not feeding": "not_able_to_feed_at_all",
+            "not eating": "not_able_to_feed_at_all",
             "normal": "feeding_normally",
             "fine": "feeding_normally",
         },
@@ -64,8 +85,15 @@ QUESTION_BANK = {
             "unusually cold, especially the hands and feet?"
         ),
         "answer_map": {
+            "not hot or cold": "normal",
+            "not hot nor cold": "normal",
+            "neither hot nor cold": "normal",
+            "not warm or cold": "normal",
+            "not too hot or cold": "normal",
+            "no fever": "normal",
             "warm": "fever_37_5C_or_above_or_hot_to_touch",
             "hot": "fever_37_5C_or_above_or_hot_to_touch",
+            "fever": "fever_37_5C_or_above_or_hot_to_touch",
             "sweat": "fever_37_5C_or_above_or_hot_to_touch",
             "cold": "low_temp_below_35_5C_or_cold_to_touch",
             "normal": "normal",
@@ -118,7 +146,7 @@ QUESTION_BANK = {
     },
     "age_days": {
         "question": "How many days old is the baby today?",
-        "answer_map": {},  
+        "answer_map": {},
         "target_field": "age_days",
     },
     "movement": {
@@ -155,6 +183,7 @@ QUESTION_BANK = {
             "very slow": "skin_pinch_goes_back_very_slowly",
             "normal": "none",
             "fine": "none",
+            "none": "none",
         },
         "target_field": "hydration_signs",
     },
@@ -214,9 +243,18 @@ class DisambiguationAgent:
         if sign_key == "age_days":
             return self._parse_plain_age_answer(answer_text)
 
+        negated_hit = False
         for keyword, value in entry["answer_map"].items():
-            if keyword in answer_lower and not _is_negated(answer_lower, keyword):
-                return value
+                if keyword in answer_lower:
+                    if not _is_negated(answer_lower, keyword):
+                        return value
+                    negated_hit = True
+
+        if negated_hit:
+            normal_value = entry["answer_map"].get("normal") or entry["answer_map"].get("fine")
+            if normal_value is not None:
+                return normal_value
+
         return None
 
     def _parse_age_answer(self, answer_text: str) -> Optional[dict]:
