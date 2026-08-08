@@ -461,6 +461,9 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
         throw new Error("Unable to complete assessment: Backend service did not return a valid classification.");
       }
 
+      const originalComplaint =
+        activeDraft.messages.find((m) => m.role === "user")?.text ?? lastRes.transcript ?? "";
+      
       const risk = mapRiskLevel(lastRes.risk_level);
       const summary =
         risk === "high"
@@ -479,7 +482,7 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
         explanation: lastRes.recommendation || "No detailed recommendation provided.",
         nextSteps: lastRes.next_steps || [],
         symptoms: Object.keys(lastRes.clear_signs || {}).map((s) => s.replace(/_/g, " ")),
-        transcript: lastRes.transcript || "",
+        transcript: originalComplaint,
         audioUrl: lastRes.audio_url ?? null,
       };
 
